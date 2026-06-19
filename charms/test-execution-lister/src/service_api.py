@@ -39,7 +39,7 @@ class TestExecutionService:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict):
-            raise RuntimeError("spread-tests-execution.json must contain a top-level object")
+            raise RuntimeError("spread-execution-map.json must contain a top-level object")
         return data
 
     def _load_added_tests(self) -> list[str]:

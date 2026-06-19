@@ -1,5 +1,5 @@
 calculate-tests:
-  description: Calculate spread tests to execute from changed files and backend:system list.
+  description: Calculate spread tests to execute from changed files and backend:system list using spread-execution-map.json and base-executions.json.
   params:
     changed-files:
       type: string
@@ -20,7 +20,7 @@ add-tests:
     - tests
 
 mongodb-updated:
-  description: Regenerate spread-tests-execution.json from mongodb and clear added-spread-tests.txt.
+  description: Regenerate spread-execution-map.json and base-executions.json from mongodb, then clear added-spread-tests.txt.
 
 reconcile:
   description: Rebuild charm state, secret file, and API service.

@@ -90,7 +90,7 @@ def build_base_tests(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="refresh spread-tests-execution.json using query_features.py")
+    parser = argparse.ArgumentParser(description="refresh spread-execution-map.json and base-executions.json using query_features.py")
     parser.add_argument("--query-features-path", required=True, type=str)
     parser.add_argument("--credentials-path", required=True, type=str)
     parser.add_argument("--output-dir", required=True, type=str)

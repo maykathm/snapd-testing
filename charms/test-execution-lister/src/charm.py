@@ -57,11 +57,15 @@ class TestExecutionListerCharm(CharmBase):
         return self.app_root / "src" / "refresh_spread_tests_execution.py"
 
     @property
-    def spread_tests_execution_path(self) -> Path:
-        configured = str(self.config.get("spread-tests-execution-path", "")).strip()
+    def execution_data_dir(self) -> Path:
+        configured = str(self.config.get("execution-data-dir", "")).strip()
         if configured:
             return Path(configured)
-        return self.STATE_DIR / "spread-tests-execution.json"
+        return self.STATE_DIR
+
+    @property
+    def spread_tests_execution_path(self) -> Path:
+        return self.execution_data_dir / "spread-execution-map.json"
 
     @property
     def added_spread_tests_path(self) -> Path:
@@ -72,10 +76,7 @@ class TestExecutionListerCharm(CharmBase):
 
     @property
     def base_tests_path(self) -> Path:
-        configured = str(self.config.get("base-tests-path", "")).strip()
-        if configured:
-            return Path(configured)
-        return self.STATE_DIR / "base-tests.json"
+        return self.execution_data_dir / "base-executions.json"
 
     @property
     def query_features_requirements_path(self) -> Path:
@@ -169,9 +170,8 @@ class TestExecutionListerCharm(CharmBase):
 
     def _ensure_state_dirs(self) -> None:
         self.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        self.spread_tests_execution_path.parent.mkdir(parents=True, exist_ok=True)
+        self.execution_data_dir.mkdir(parents=True, exist_ok=True)
         self.added_spread_tests_path.parent.mkdir(parents=True, exist_ok=True)
-        self.base_tests_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _write_service_config(self) -> bool:
         config = {
@@ -232,11 +232,11 @@ class TestExecutionListerCharm(CharmBase):
             "mongodb-secret-id": str(self.config.get("mongodb-secret-id") or "").strip(),
             "query-features-path": str(self._query_features_path()),
             "query-features-requirements-path": str(self.query_features_requirements_path),
-            "spread-tests-execution-path": str(self.spread_tests_execution_path),
+            "execution-data-dir": str(self.execution_data_dir),
+            "spread-execution-map-path": str(self.spread_tests_execution_path),
             "added-spread-tests-path": str(self.added_spread_tests_path),
-            "base-tests-path": str(self.base_tests_path),
+            "base-executions-path": str(self.base_tests_path),
             "base-tests-max-minutes": int(self.config.get("base-tests-max-minutes", 0)),
-            "base-tests-exclude": self._parse_csv_or_lines(str(self.config.get("base-tests-exclude") or "")),
             "refresh-helper-command": str(self.config.get("refresh-helper-command") or "").strip(),
             "refresh-timeout-seconds": int(self.config.get("refresh-timeout-seconds", 300)),
             "refresh-command": config["refresh_command"],
@@ -253,7 +253,6 @@ class TestExecutionListerCharm(CharmBase):
         configured = str(self.config.get("refresh-helper-command") or "").strip()
         if configured:
             return shlex.split(configured)
-        exclude = self._parse_csv_or_lines(str(self.config.get("base-tests-exclude") or ""))
         return [
             "python3",
             str(self.refresh_helper_script),
@@ -261,14 +260,10 @@ class TestExecutionListerCharm(CharmBase):
             str(self._query_features_path()),
             "--credentials-path",
             str(self.MONGODB_CREDENTIALS_PATH),
-            "--output-path",
-            str(self.spread_tests_execution_path),
-            "--base-tests-output-path",
-            str(self.base_tests_path),
+            "--output-dir",
+            str(self.execution_data_dir),
             "--base-tests-max-minutes",
             str(int(self.config.get("base-tests-max-minutes", 0))),
-            "--base-tests-exclude",
-            *exclude,
         ]
 
     def _write_mongodb_credentials_file(self) -> None:
