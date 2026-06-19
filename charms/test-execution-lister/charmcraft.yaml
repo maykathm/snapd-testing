@@ -1,0 +1,19 @@
+name: test-execution-lister
+summary: List tests that should be executed based on file changes
+
+description: |
+  Machine charm that runs a local API to calculate spread tests from changed files,
+  append added tests, and refresh spread-tests-execution mapping from mongodb
+  through query_features.py.
+
+type: charm
+base: ubuntu@24.04
+platforms:
+  amd64:
+
+parts:
+  charm:
+    plugin: charm
+    source: .
+    charm-requirements:
+      - requirements.txt

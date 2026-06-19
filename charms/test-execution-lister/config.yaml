@@ -1,0 +1,49 @@
+options:
+  listen-host:
+    type: string
+    default: 127.0.0.1
+    description: "Host for the local API service."
+  listen-port:
+    type: int
+    default: 8181
+    description: "Port for the local API service."
+  mongodb-secret-id:
+    type: string
+    default: ""
+    description: "Juju secret ID containing mongodb credentials json."
+  query-features-path:
+    type: string
+    default: /home/ubuntu/source/snapd/tests/utils/features/query_features.py
+    description: "Absolute path to query_features.py on the unit."
+  query-features-requirements-path:
+    type: string
+    default: ""
+    description: "Optional path to the requirements.txt used by query_features.py; defaults to the sibling requirements.txt next to query_features-path."
+  spread-tests-execution-path:
+    type: string
+    default: /var/lib/test-execution-lister/spread-tests-execution.json
+    description: "Path to spread-tests-execution.json consumed by the service."
+  added-spread-tests-path:
+    type: string
+    default: /var/lib/test-execution-lister/added-spread-tests.txt
+    description: "Path to added-spread-tests.txt consumed by the service."
+  base-tests-path:
+    type: string
+    default: /var/lib/test-execution-lister/base-tests.json
+    description: "Path to the JSON file containing base tests keyed by backend:system."
+  refresh-helper-command:
+    type: string
+    default: ""
+    description: "Optional command used to regenerate spread-tests-execution.json. If unset, built-in helper is used."
+  base-tests-max-minutes:
+    type: int
+    default: 0
+    description: "Maximum amount of execution time, in minutes, for the base test coverage set."
+  base-tests-exclude:
+    type: string
+    default: ""
+    description: "Comma or newline separated feature names to exclude when calculating the base test set."
+  refresh-timeout-seconds:
+    type: int
+    default: 300
+    description: "Timeout for mongodb refresh helper command."

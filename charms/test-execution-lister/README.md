@@ -1,0 +1,105 @@
+# test-execution-lister
+
+`test-execution-lister` is a machine charm that exposes a small local API for deciding which spread tests should run from a set of changed files, tracking manually added tests, and refreshing the test map from MongoDB through `query_features.py` from the snapd repository.
+
+## What it does
+
+The charm manages three pieces of state on the unit:
+
+- a MongoDB credentials JSON file written from a Juju secret
+- `spread-tests-execution.json`, used to look up tests by backend and changed Go file
+- `added-spread-tests.txt`, used to carry tests that should always be included
+
+The service listens on `listen-host:listen-port` and can handle multiple requests in parallel.
+
+## Configuration
+
+Available config options are defined in [config.yaml](config.yaml):
+
+- `listen-host`: host for the local API service, default `127.0.0.1`
+- `listen-port`: port for the local API service, default `8181`
+- `mongodb-secret-id`: Juju secret ID containing the MongoDB credentials JSON
+- `query-features-path`: absolute path to `query_features.py` on the unit
+- `query-features-requirements-path`: optional override for the `requirements.txt` used by `query_features.py`; by default the charm uses the sibling file next to `query_features.py`
+- `spread-tests-execution-path`: path to the generated spread test mapping
+- `added-spread-tests-path`: path to the added tests text file
+- `base-tests-path`: path to the JSON file containing base tests keyed by backend:system
+- `refresh-helper-command`: optional override for the helper command that rebuilds `spread-tests-execution.json`
+- `base-tests-max-minutes`: maximum execution time, in minutes, for the base test coverage set
+- `base-tests-exclude`: comma or newline separated list of feature names to exclude from base coverage calculation
+- `refresh-timeout-seconds`: timeout used when refreshing from MongoDB
+
+The default `query-features-path` assumes the snapd repository is available on the machine at `/home/ubuntu/source/snapd/tests/utils/features/query_features.py`. Update that value if your path is different.
+
+The charm installs the dependencies listed in the corresponding `requirements.txt` before starting the API service or running the refresh helper.
+
+## Juju secret format
+
+The charm expects `mongodb-secret-id` to point to a Juju secret whose content contains either:
+
+- a JSON string under one of these keys:
+  - `mongodb-credentials-json`
+  - `mongodb_credentials_json`
+  - `credentials-json`
+  - `credentials_json`
+  - `json`
+- or direct top-level keys named `host`, `port`, `user`, and `password`
+
+The preferred format is a single JSON string, for example:
+
+```json
+{
+  "host": "mongodb.example.internal",
+  "port": 27017,
+  "user": "snapd",
+  "password": "secret"
+}
+```
+
+Example secret creation:
+
+```bash
+juju add-secret test-execution-lister-mongodb mongodb-credentials-json='{"host":"mongodb.example.internal","port":27017,"user":"snapd","password":"secret"}'
+juju config test-execution-lister mongodb-secret-id=<secret-id>
+```
+
+## Actions
+
+Actions are defined in [actions.yaml](actions.yaml):
+
+- `calculate-tests`: accepts `changed-files` and `backend-systems`, then returns the tests that should be executed
+- `add-tests`: appends tests to `added-spread-tests.txt`
+- `mongodb-updated`: rebuilds `spread-tests-execution.json` and clears `added-spread-tests.txt`
+- `reconcile`: rebuilds charm-managed files and service state
+- `service-status`: returns the systemd status for the API service
+
+Example action calls:
+
+```bash
+juju run-action test-execution-lister/0 calculate-tests \
+  changed-files='src/foo.go,docs/readme.md' \
+  backend-systems='amd64:ubuntu-24.04,arm64:ubuntu-24.04'
+
+juju run-action test-execution-lister/0 add-tests \
+  tests='tests/spread/foo,tests/spread/bar'
+
+juju run-action test-execution-lister/0 mongodb-updated
+```
+
+## Files on the unit
+
+Default paths:
+
+- `/var/lib/test-execution-lister/mongodb-credentials.json`
+- `/var/lib/test-execution-lister/spread-tests-execution.json`
+- `/var/lib/test-execution-lister/added-spread-tests.txt`
+- `/var/lib/test-execution-lister/base-tests.json`
+- `/var/lib/test-execution-lister/service-config.json`
+
+## Notes
+
+- Only Go source files are used when resolving changed-file lookups.
+- Base tests are recalculated on MongoDB refresh using `query_features.py feat cover` with `--max-minutes` and `--exclude` taken from charm config.
+- Base tests from `base-tests-path` are always included for each requested backend:system.
+- Tests listed in `added-spread-tests.txt` are always included for every backend:system passed to `calculate-tests`.
+- `mongodb-updated` runs the helper command, which in turn uses `query_features.py` to query MongoDB.
