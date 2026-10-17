@@ -21,7 +21,7 @@ class FeatureQuery:
             "python3",
             str(self.query_features_path),
             *command.split(),
-            "-d",
+            "-f",
             self.creds_path,
             *args.split()
         ]
@@ -56,7 +56,6 @@ def get_test_name(system: str, suite: str, task_name: str, variant: str):
 
 def build_execution_map(fq: FeatureQuery) -> dict[str, dict[str, list[str]]]:
     timestamp, systems = _latest_timestamp_and_systems(fq)
-    systems = systems[:3]
     output: dict[str, dict[str, list[str]]] = {}
     for system in systems:
         coverages = fq.query_features("feat sys", f"-t {timestamp} -s {system} --exclude cmds interfaces endpoints ensures tasks changes")

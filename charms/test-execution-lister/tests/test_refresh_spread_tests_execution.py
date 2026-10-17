@@ -29,7 +29,7 @@ class FeatureQueryTests(unittest.TestCase):
                 "/tmp/query_features.py",
                 "feat",
                 "sys",
-                "-d",
+                "-f",
                 "/tmp/creds.json",
                 "-t",
                 "123",
@@ -94,7 +94,7 @@ class NamingTests(unittest.TestCase):
 
 
 class BuildExecutionMapTests(unittest.TestCase):
-    def test_build_execution_map_limits_systems_and_filters_coverage(self) -> None:
+    def test_build_execution_map_covers_all_systems_and_filters_coverage(self) -> None:
         fq = Mock()
         fq.query_features.side_effect = [
             [{"timestamp": "ts-1", "systems": ["s1", "s2", "s3", "s4"]}],
@@ -127,11 +127,22 @@ class BuildExecutionMapTests(unittest.TestCase):
             },
             {},
             {"tests": []},
+            {
+                "tests": [
+                    {
+                        "suite": "tests/spread/c",
+                        "task_name": "task",
+                        "variant": "",
+                        "coverages": [{"file": "snap/baz.go", "func": "Do"}],
+                    },
+                ]
+            },
         ]
 
         output = refresh.build_execution_map(fq)
 
-        self.assertEqual(set(output.keys()), {"s1", "s3"})
+        self.assertEqual(set(output.keys()), {"s1", "s3", "s4"})
+        self.assertEqual(output["s4"], {"snap/baz.go": ["s4:tests/spread/c/task"]})
         self.assertEqual(
             output["s1"]["snap/foo.go"],
             [
@@ -146,8 +157,9 @@ class BuildExecutionMapTests(unittest.TestCase):
             (("feat sys", "-t ts-1 -s s1 --exclude cmds interfaces endpoints ensures tasks changes"),),
             (("feat sys", "-t ts-1 -s s2 --exclude cmds interfaces endpoints ensures tasks changes"),),
             (("feat sys", "-t ts-1 -s s3 --exclude cmds interfaces endpoints ensures tasks changes"),),
+            (("feat sys", "-t ts-1 -s s4 --exclude cmds interfaces endpoints ensures tasks changes"),),
         ]
-        self.assertEqual(fq.query_features.call_count, 4)
+        self.assertEqual(fq.query_features.call_count, 5)
         for idx, call in enumerate(fq.query_features.call_args_list):
             self.assertEqual(call.args, expected_calls[idx][0])
 
