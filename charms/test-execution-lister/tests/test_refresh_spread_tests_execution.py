@@ -123,6 +123,13 @@ class BuildExecutionMapTests(unittest.TestCase):
                         "task_name": "",
                         "variant": "",
                     },
+                    {
+                        "suite": "tests/spread/failed",
+                        "task_name": "task",
+                        "variant": "",
+                        "success": False,
+                        "coverages": [{"file": "snap/failed-only.go", "func": "Do"}],
+                    },
                 ]
             },
             {},
@@ -151,6 +158,7 @@ class BuildExecutionMapTests(unittest.TestCase):
             ],
         )
         self.assertEqual(output["s1"]["interfaces/bar.go"], ["s1:tests/spread/a"])
+        self.assertNotIn("snap/failed-only.go", output["s1"])
 
         expected_calls = [
             (("list",),),

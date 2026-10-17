@@ -63,7 +63,10 @@ def build_execution_map(fq: FeatureQuery) -> dict[str, dict[str, list[str]]]:
             continue
         output[system] = {}
         for test in coverages['tests']:
-            if 'coverages' not in test:
+            # Failed tests stop recording coverage where they failed, so their
+            # coverage is incomplete. Leaving them out of the map makes them
+            # always selected, like any other test without coverage.
+            if 'coverages' not in test or test.get('success') is False:
                 continue
             name = get_test_name(system, test['suite'], test['task_name'], test['variant'])
             files = {
