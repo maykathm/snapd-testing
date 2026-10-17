@@ -95,6 +95,19 @@ Default paths:
 - `/var/lib/test-execution-lister/base-executions.json`
 - `/var/lib/test-execution-lister/service-config.json`
 
+## Checking the logic against recent snapd commits
+
+`tools/check_recent_commits.py` runs the same `calculate-tests` logic as the API over the most recent first-parent commits of a snapd ref, using `spread -list` at that ref as the allowed tests, and prints how many tests each commit would run and why:
+
+```bash
+tools/check_recent_commits.py --snapd ~/source/snapd --data-dir /tmp/tel \
+  --credentials ~/mongo-creds.json --commits 20 --fetch --details
+```
+
+- `--data-dir` holds `spread-execution-map.json` and `base-executions.json`; they are built from mongodb with the refresh helper when missing (or with `--refresh`), which needs `--credentials` and `pymongo` available to `python3`. Spread lists are cached there per commit.
+- `--systems` and `--suites` choose what is listed (default: the openstack systems in the map, `tests/main/`); `--focus` picks the system shown in the table.
+- `--show-tests <commit>` prints the selected tests for one commit, and `--json` writes all results.
+
 ## Notes
 
 - A changed file inside a test folder, `tests/<suite>/<test>/...` for the spread suites listed in `SPREAD_SUITES` in `src/service_api.py` (e.g. `tests/main/foo/task.yaml` or `tests/nested/manual/bar/script.sh`), selects that test, including all its variants, for the backend:systems whose `tests` input contains it. A changed test that is not in the input (e.g. a deleted test) selects nothing.
