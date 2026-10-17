@@ -113,7 +113,31 @@ class TestExecutionListerCharm(CharmBase):
         event.set_results({"service": self.SERVICE_NAME, "status": status})
 
     def _on_calculate_tests_action(self, event: ActionEvent):
-        changed_files = self._parse_csv_or_lines(str(event.params.get("changed-files") or ""))
+        changed_files_json = str(event.params.get("changed-files-json") or "").strip()
+        if not changed_files_json:
+            event.fail("changed-files-json is required and must be a json object with modified/added/deleted lists")
+            return
+
+        try:
+            parsed = json.loads(changed_files_json)
+        except json.JSONDecodeError as exc:
+            event.fail(f"changed-files-json must be valid json: {exc}")
+            return
+
+        if not isinstance(parsed, dict):
+            event.fail("changed-files-json must be a json object with modified/added/deleted lists")
+            return
+
+        changed_files = {
+            key: [str(item) for item in parsed.get(key, [])]
+            for key in ("modified", "added", "deleted")
+        }
+
+        tests = self._parse_csv_or_lines(str(event.params.get("tests") or ""))
+        if not tests:
+            event.fail("tests must contain at least one allowed test")
+            return
+
         backend_systems = self._parse_csv_or_lines(str(event.params.get("backend-systems") or ""))
         if not backend_systems:
             event.fail("backend-systems must contain at least one backend:system")
@@ -121,7 +145,7 @@ class TestExecutionListerCharm(CharmBase):
 
         response = self._call_service(
             endpoint="/calculate-tests",
-            payload={"changed_files": changed_files, "backend_systems": backend_systems},
+            payload={"changed_files": changed_files, "backend_systems": backend_systems, "tests": tests},
         )
         event.set_results(
             {

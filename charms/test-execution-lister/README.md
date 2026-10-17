@@ -65,7 +65,7 @@ juju config test-execution-lister mongodb-secret-id=<secret-id>
 
 Actions are defined in [actions.yaml](actions.yaml):
 
-- `calculate-tests`: accepts `changed-files` and `backend-systems`, then returns the tests that should be executed
+- `calculate-tests`: accepts `backend-systems`, `changed-files-json`, and `tests`, then returns the tests that should be executed
 - `add-tests`: appends tests to `added-spread-tests.txt`
 - `mongodb-updated`: rebuilds `spread-execution-map.json` and `base-executions.json`, then clears `added-spread-tests.txt`
 - `reconcile`: rebuilds charm-managed files and service state
@@ -75,7 +75,8 @@ Example action calls:
 
 ```bash
 juju run-action test-execution-lister/0 calculate-tests \
-  changed-files='src/foo.go,docs/readme.md' \
+  changed-files-json='{"modified":["snap/foo.go"],"added":["interfaces/new.go"],"deleted":[]}' \
+  tests='amd64:ubuntu-24.04:tests/spread/foo,arm64:ubuntu-24.04:tests/spread/foo' \
   backend-systems='amd64:ubuntu-24.04,arm64:ubuntu-24.04'
 
 juju run-action test-execution-lister/0 add-tests \
@@ -97,7 +98,8 @@ Default paths:
 ## Notes
 
 - Only Go source files are used when resolving changed-file lookups.
+- `calculate-tests` requires structured JSON (`changed-files-json`) with `modified`, `added`, and `deleted` keys.
+- `calculate-tests` requires an allowed tests list (`tests`) and uses the same selection logic as `src/calculate_tests.py`.
 - Base tests are recalculated on MongoDB refresh using `query_features.py feat cover` with `--max-minutes` taken from charm config.
-- Base tests from `base-executions.json` are always included for each requested backend:system.
 - Tests listed in `added-spread-tests.txt` are always included for every backend:system passed to `calculate-tests`.
 - `mongodb-updated` runs the helper command, which in turn uses `query_features.py` to query MongoDB.

@@ -100,10 +100,10 @@ def calculate_tests_to_execute(
 
 def main() -> None:
 	parser = argparse.ArgumentParser(description="Calculate tests to execute")
-	parser.add_argument("--system", required=True, type=str)
-	parser.add_argument("--tests-path", required=True, type=str)
-	parser.add_argument("--changed-files-path", required=True, type=str)
-	parser.add_argument("--directory", required=True, type=str)
+	parser.add_argument("--system", help="spread system to calculate tests for", required=True, type=str)
+	parser.add_argument("--tests-path", help="path to a list of possible tests to execute, separated by newlines", required=True, type=str)
+	parser.add_argument("--changed-files-path", help="path to json file with added, deleted, and modified lists of files", required=True, type=str)
+	parser.add_argument("--directory", help="path to directory where spread execution map and base executions are", required=True, type=str)
 	args = parser.parse_args()
 
 	tests_path = Path(args.tests_path)

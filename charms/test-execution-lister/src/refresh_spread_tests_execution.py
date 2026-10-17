@@ -25,7 +25,13 @@ class FeatureQuery:
             self.creds_path,
             *args.split()
         ]
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"query_features.py failed with exit code {result.returncode}\n"
+                f"Command: {' '.join(cmd)}\n"
+                f"stderr: {result.stderr}"
+            )
         return json.loads(result.stdout or "{}")
 
 

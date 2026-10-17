@@ -13,6 +13,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from calculate_tests import calculate_tests_to_execute
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,7 +24,6 @@ class TestExecutionService:
     def __init__(self, config: dict[str, Any]):
         self.spread_tests_execution_path = Path(config["spread_tests_execution_path"])
         self.added_spread_tests_path = Path(config["added_spread_tests_path"])
-        self.base_tests_path = Path(config.get("base_tests_path", ""))
         self.refresh_command = config["refresh_command"]
         self.refresh_timeout_seconds = int(config.get("refresh_timeout_seconds", 300))
         self._add_tests_lock = threading.Lock()
@@ -32,36 +33,40 @@ class TestExecutionService:
     def _is_go_source(path: str) -> bool:
         return path.endswith(".go")
 
-    @staticmethod
-    def _load_json(path: Path) -> dict:
-        if not path.exists():
-            return {}
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            raise RuntimeError("spread-execution-map.json must contain a top-level object")
-        return data
-
     def _load_added_tests(self) -> list[str]:
         if not self.added_spread_tests_path.exists():
             return []
         lines = self.added_spread_tests_path.read_text(encoding="utf-8").splitlines()
         return [line.strip() for line in lines if line.strip()]
 
-    def _load_base_tests(self) -> dict[str, list[str]]:
-        if not self.base_tests_path.exists():
-            return {}
-        with self.base_tests_path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            raise RuntimeError("base-tests.json must contain a top-level object")
+    @staticmethod
+    def _normalize_changed_files(changed_files: Any) -> dict[str, list[str]]:
+        if not isinstance(changed_files, dict):
+            raise RuntimeError("changed_files must be an object with modified/added/deleted lists")
 
         normalized: dict[str, list[str]] = {}
-        for backend_system, tests in data.items():
-            if not isinstance(tests, list):
-                continue
-            normalized[str(backend_system)] = [str(test).strip() for test in tests if str(test).strip()]
+        for key in ("modified", "added", "deleted"):
+            raw = changed_files.get(key, [])
+            if not isinstance(raw, list):
+                raise RuntimeError(f"changed_files.{key} must be a list")
+            normalized[key] = [str(path) for path in raw if isinstance(path, str)]
         return normalized
+
+    @staticmethod
+    def _tests_for_system(system: str, tests: list[str]) -> list[str]:
+        selected: list[str] = []
+        system_prefix = f"{system}:"
+        for test in tests:
+            value = str(test).strip()
+            if not value:
+                continue
+            if value.startswith(system_prefix):
+                selected.append(value)
+                continue
+            if ":" in value:
+                continue
+            selected.append(f"{system}:{value}")
+        return selected
 
     @staticmethod
     def _unique_keep_order(items: list[str]) -> list[str]:
@@ -74,33 +79,28 @@ class TestExecutionService:
             out.append(item)
         return out
 
-    def calculate_tests(self, changed_files: list[str], backend_systems: list[str]) -> list[str]:
-        mapping = self._load_json(self.spread_tests_execution_path)
-        base_tests = self._load_base_tests()
-        go_files = [path for path in changed_files if self._is_go_source(path)]
+    def calculate_tests(self, changed_files: Any, backend_systems: list[str], tests: list[str]) -> list[str]:
+        changed_files_by_type = self._normalize_changed_files(changed_files)
+        for key, paths in changed_files_by_type.items():
+            changed_files_by_type[key] = [path for path in paths if self._is_go_source(path)]
 
         resolved_tests: list[str] = []
 
-        for backend_system in backend_systems:
-            for base_test in base_tests.get(backend_system, []):
-                resolved_tests.append(base_test)
-
         added_tests = self._load_added_tests()
         for backend_system in backend_systems:
+            allowed_tests = self._tests_for_system(backend_system, tests)
             for added in added_tests:
-                resolved_tests.append(f"{backend_system}:{added}")
+                value = added.strip()
+                if value:
+                    allowed_tests.append(f"{backend_system}:{value}")
 
-        for backend_system in backend_systems:
-            backend_map = mapping.get(backend_system)
-            if not isinstance(backend_map, dict):
-                continue
-            for changed_file in go_files:
-                tests = backend_map.get(changed_file, [])
-                if not isinstance(tests, list):
-                    continue
-                for test in tests:
-                    if isinstance(test, str) and test.strip():
-                        resolved_tests.append(test.strip())
+            selected = calculate_tests_to_execute(
+                system=backend_system,
+                tests=self._unique_keep_order(allowed_tests),
+                changed_files=changed_files_by_type,
+                directory=str(self.spread_tests_execution_path.parent),
+            )
+            resolved_tests.extend(selected)
 
         return self._unique_keep_order(resolved_tests)
 
@@ -161,11 +161,17 @@ class ApiHandler(BaseHTTPRequestHandler):
             if self.path == "/calculate-tests":
                 changed_files = payload.get("changed_files", [])
                 backend_systems = payload.get("backend_systems", [])
-                if not isinstance(changed_files, list) or not isinstance(backend_systems, list):
-                    raise RuntimeError("changed_files and backend_systems must be lists")
+                tests = payload.get("tests", [])
+                if not isinstance(changed_files, dict):
+                    raise RuntimeError("changed_files must be an object with modified/added/deleted lists")
+                if not isinstance(backend_systems, list):
+                    raise RuntimeError("backend_systems must be a list")
+                if not isinstance(tests, list):
+                    raise RuntimeError("tests must be a list")
                 tests = self.service.calculate_tests(
-                    [str(item) for item in changed_files],
+                    changed_files,
                     [str(item) for item in backend_systems],
+                    [str(item) for item in tests],
                 )
                 self._write_json(HTTPStatus.OK, {"tests": tests, "count": len(tests)})
                 return

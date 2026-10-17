@@ -1,4 +1,4 @@
-name: test-execution-lister
+name: spread-execution-lister
 summary: List tests that should be executed based on file changes
 
 description: |
