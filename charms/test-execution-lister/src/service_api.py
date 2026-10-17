@@ -31,7 +31,9 @@ class TestExecutionService:
 
     @staticmethod
     def _is_go_source(path: str) -> bool:
-        return path.endswith(".go")
+        # Go unit test files never appear in spread coverage, so treating them
+        # as unmatched would select every test.
+        return path.endswith(".go") and not path.endswith("_test.go")
 
     def _load_added_tests(self) -> list[str]:
         if not self.added_spread_tests_path.exists():

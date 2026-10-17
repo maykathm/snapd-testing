@@ -113,6 +113,42 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
             ],
         )
 
+    def test_calculate_tests_ignores_go_unit_test_files(self) -> None:
+        system = "amd64:ubuntu-24.04"
+        service = self._make_service(
+            spread_map={
+                system: {
+                    "snap/foo.go": [f"{system}:tests/spread/mod"],
+                    "pkg/sub/existing.go": [f"{system}:tests/spread/dir"],
+                    "other/thing.go": [f"{system}:tests/spread/other"],
+                }
+            },
+            base_tests={system: [f"{system}:tests/spread/base"]},
+        )
+
+        selected = service.calculate_tests(
+            changed_files={
+                "modified": ["snap/foo.go", "snap/foo_test.go"],
+                "added": ["pkg/sub/new_test.go"],
+                "deleted": ["other/old_test.go"],
+            },
+            backend_systems=[system],
+            tests=[
+                f"{system}:tests/spread/base",
+                f"{system}:tests/spread/mod",
+                f"{system}:tests/spread/dir",
+                f"{system}:tests/spread/other",
+            ],
+        )
+
+        self.assertEqual(
+            selected,
+            [
+                f"{system}:tests/spread/base",
+                f"{system}:tests/spread/mod",
+            ],
+        )
+
     def test_calculate_tests_filters_allowed_tests_per_backend(self) -> None:
         amd64 = "amd64:ubuntu-24.04"
         arm64 = "arm64:ubuntu-24.04"
