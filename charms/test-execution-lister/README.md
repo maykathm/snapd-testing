@@ -97,7 +97,8 @@ Default paths:
 
 ## Notes
 
-- If any changed file is under `tests/` (spread tasks, helpers, or tooling), every allowed test is returned.
+- A changed file under `tests/` that is inside the folder of an allowed test (e.g. `tests/main/foo/task.yaml` or `tests/main/foo/script.sh`) selects that test, including all its variants. Test folders are taken from the `tests` list across all requested backend systems.
+- Any other changed file under `tests/` (shared helpers such as `tests/lib/`, tooling, or a deleted test) returns every allowed test.
 - Only Go source files are used when resolving changed-file lookups; Go unit test files (`_test.go`) are ignored because they never appear in spread coverage.
 - `calculate-tests` requires structured JSON (`changed-files-json`) with `modified`, `added`, and `deleted` keys.
 - `calculate-tests` requires an allowed tests list (`tests`) and uses the same selection logic as `src/calculate_tests.py`.

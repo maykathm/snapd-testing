@@ -37,9 +37,21 @@ class TestExecutionService:
 
     @staticmethod
     def _is_test_script(path: str) -> bool:
-        # Spread tests and their helpers are not part of the coverage data,
-        # so any change under tests/ requires running everything.
         return path.startswith("tests/")
+
+    @staticmethod
+    def _test_dir(system: str, test: str) -> str:
+        """Return the folder of a system-prefixed test, without its variant."""
+        return test[len(system) + 1:].split(":", 1)[0]
+
+    @staticmethod
+    def _owning_test_dir(path: str, test_dirs: set[str]) -> str | None:
+        parent = Path(path).parent
+        while parent.as_posix() not in (".", ""):
+            if parent.as_posix() in test_dirs:
+                return parent.as_posix()
+            parent = parent.parent
+        return None
 
     def _load_added_tests(self) -> list[str]:
         if not self.added_spread_tests_path.exists():
@@ -89,33 +101,59 @@ class TestExecutionService:
 
     def calculate_tests(self, changed_files: Any, backend_systems: list[str], tests: list[str]) -> list[str]:
         changed_files_by_type = self._normalize_changed_files(changed_files)
-        run_all = any(
-            self._is_test_script(path) for paths in changed_files_by_type.values() for path in paths
-        )
-        for key, paths in changed_files_by_type.items():
-            changed_files_by_type[key] = [path for path in paths if self._is_go_source(path)]
-
-        resolved_tests: list[str] = []
 
         added_tests = self._load_added_tests()
+        allowed_by_system: dict[str, list[str]] = {}
         for backend_system in backend_systems:
             allowed_tests = self._tests_for_system(backend_system, tests)
             for added in added_tests:
                 value = added.strip()
                 if value:
                     allowed_tests.append(f"{backend_system}:{value}")
+            allowed_by_system[backend_system] = self._unique_keep_order(allowed_tests)
 
+        # Spread tests and their helpers are not part of the coverage data. A
+        # change inside a test's own folder selects that test; any other change
+        # under tests/ (e.g. shared helpers in tests/lib) requires running
+        # everything. Test folders are collected across all systems so a test
+        # enabled only on some systems does not trigger everything elsewhere.
+        test_dirs = {
+            self._test_dir(system, test) for system, allowed in allowed_by_system.items() for test in allowed
+        }
+        changed_test_dirs: set[str] = set()
+        run_all = False
+        for paths in changed_files_by_type.values():
+            for path in paths:
+                if not self._is_test_script(path):
+                    continue
+                owner = self._owning_test_dir(path, test_dirs)
+                if owner is None:
+                    run_all = True
+                else:
+                    changed_test_dirs.add(owner)
+
+        for key, paths in changed_files_by_type.items():
+            changed_files_by_type[key] = [path for path in paths if self._is_go_source(path)]
+
+        resolved_tests: list[str] = []
+        for backend_system, allowed_tests in allowed_by_system.items():
             if run_all:
-                resolved_tests.extend(self._unique_keep_order(allowed_tests))
+                resolved_tests.extend(allowed_tests)
                 continue
 
-            selected = calculate_tests_to_execute(
-                system=backend_system,
-                tests=self._unique_keep_order(allowed_tests),
-                changed_files=changed_files_by_type,
-                directory=str(self.spread_tests_execution_path.parent),
+            selected = set(
+                calculate_tests_to_execute(
+                    system=backend_system,
+                    tests=allowed_tests,
+                    changed_files=changed_files_by_type,
+                    directory=str(self.spread_tests_execution_path.parent),
+                )
             )
-            resolved_tests.extend(selected)
+            resolved_tests.extend(
+                test
+                for test in allowed_tests
+                if test in selected or self._test_dir(backend_system, test) in changed_test_dirs
+            )
 
         return self._unique_keep_order(resolved_tests)
 
