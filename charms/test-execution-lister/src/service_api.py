@@ -17,6 +17,29 @@ from calculate_tests import calculate_tests_to_execute
 
 logger = logging.getLogger(__name__)
 
+# Spread suites in the snapd repository. Each folder directly under a suite is
+# a test, so a changed file at tests/<suite>/<test>/... belongs to that test.
+SPREAD_SUITES = (
+    "tests/completion",
+    "tests/core",
+    "tests/cross",
+    "tests/cross-distro-reexec",
+    "tests/fips-deb",
+    "tests/fips-snap",
+    "tests/main",
+    "tests/nested/classic",
+    "tests/nested/core",
+    "tests/nested/manual",
+    "tests/nightly",
+    "tests/perf/main",
+    "tests/perf/nested",
+    "tests/regression",
+    "tests/release",
+    "tests/smoke",
+    "tests/unit",
+    "tests/upgrade",
+)
+
 
 class TestExecutionService:
     """Core logic behind API operations."""
@@ -45,12 +68,12 @@ class TestExecutionService:
         return test[len(system) + 1:].split(":", 1)[0]
 
     @staticmethod
-    def _owning_test_dir(path: str, test_dirs: set[str]) -> str | None:
-        parent = Path(path).parent
-        while parent.as_posix() not in (".", ""):
-            if parent.as_posix() in test_dirs:
-                return parent.as_posix()
-            parent = parent.parent
+    def _owning_test_dir(path: str) -> str | None:
+        """Return the test folder a file is in, or None if it is not in one."""
+        for suite in SPREAD_SUITES:
+            rest = path[len(suite) + 1:] if path.startswith(suite + "/") else None
+            if rest and "/" in rest:
+                return f"{suite}/{rest.split('/', 1)[0]}"
         return None
 
     def _load_added_tests(self) -> list[str]:
@@ -112,20 +135,17 @@ class TestExecutionService:
         }
 
         # Spread tests and their helpers are not part of the coverage data. A
-        # change inside a test's own folder selects that test; any other change
-        # under tests/ (e.g. shared helpers in tests/lib) requires running
-        # everything. Test folders are collected across all systems so a test
-        # enabled only on some systems does not trigger everything elsewhere.
-        test_dirs = {
-            self._test_dir(system, test) for system, allowed in allowed_by_system.items() for test in allowed
-        }
+        # change inside a test's own folder selects that test where it is
+        # allowed; any other change under tests/ (e.g. shared helpers in
+        # tests/lib or files directly in a suite folder) requires running
+        # everything.
         changed_test_dirs: set[str] = set()
         run_all = False
         for paths in changed_files_by_type.values():
             for path in paths:
                 if not self._is_test_script(path):
                     continue
-                owner = self._owning_test_dir(path, test_dirs)
+                owner = self._owning_test_dir(path)
                 if owner is None:
                     run_all = True
                 else:

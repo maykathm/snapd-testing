@@ -159,9 +159,9 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
         )
 
         for changed_files in (
-            {"modified": ["tests/main/foo/task.yaml"], "added": [], "deleted": []},
             {"modified": [], "added": ["tests/lib/new-helper.sh"], "deleted": []},
-            {"modified": ["snap/foo.go"], "added": [], "deleted": ["tests/main/old/task.yaml"]},
+            {"modified": ["tests/completion/dirs.sh"], "added": [], "deleted": []},
+            {"modified": ["snap/foo.go"], "added": [], "deleted": ["tests/utils/tool.py"]},
         ):
             with self.subTest(changed_files=changed_files):
                 selected = service.calculate_tests(
@@ -225,6 +225,41 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
                 f"{system}:tests/main/other:v1",
                 f"{system}:tests/main/other:v2",
             ],
+        )
+
+    def test_calculate_tests_test_folders_follow_spread_suites(self) -> None:
+        system = "amd64:ubuntu-24.04"
+        service = self._make_service(
+            spread_map={
+                system: {
+                    "snap/foo.go": [
+                        f"{system}:tests/nested/manual/nested-test",
+                        f"{system}:tests/regression/lp-1",
+                        f"{system}:tests/main/mod",
+                    ]
+                }
+            },
+            base_tests={},
+        )
+
+        selected = service.calculate_tests(
+            changed_files={
+                "modified": ["tests/nested/manual/nested-test/task.yaml", "tests/regression/lp-1/task.yaml"],
+                "added": [],
+                # a deleted test, and a test that is not in the input, select nothing
+                "deleted": ["tests/main/removed/task.yaml", "tests/smoke/not-listed/task.yaml"],
+            },
+            backend_systems=[system],
+            tests=[
+                f"{system}:tests/nested/manual/nested-test",
+                f"{system}:tests/regression/lp-1",
+                f"{system}:tests/main/mod",
+            ],
+        )
+
+        self.assertEqual(
+            selected,
+            [f"{system}:tests/nested/manual/nested-test", f"{system}:tests/regression/lp-1"],
         )
 
     def test_calculate_tests_selects_new_test(self) -> None:
