@@ -149,6 +149,40 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
             ],
         )
 
+    def test_calculate_tests_returns_all_allowed_on_changed_test_script(self) -> None:
+        system = "amd64:ubuntu-24.04"
+        service = self._make_service(
+            spread_map={system: {"snap/foo.go": [f"{system}:tests/spread/mod"]}},
+            base_tests={system: [f"{system}:tests/spread/base"]},
+            added_tests=["tests/spread/manual"],
+        )
+
+        for changed_files in (
+            {"modified": ["tests/main/foo/task.yaml"], "added": [], "deleted": []},
+            {"modified": [], "added": ["tests/lib/new-helper.sh"], "deleted": []},
+            {"modified": ["snap/foo.go"], "added": [], "deleted": ["tests/main/old/task.yaml"]},
+        ):
+            with self.subTest(changed_files=changed_files):
+                selected = service.calculate_tests(
+                    changed_files=changed_files,
+                    backend_systems=[system],
+                    tests=[
+                        f"{system}:tests/spread/base",
+                        f"{system}:tests/spread/mod",
+                        f"{system}:tests/spread/other",
+                    ],
+                )
+
+                self.assertEqual(
+                    selected,
+                    [
+                        f"{system}:tests/spread/base",
+                        f"{system}:tests/spread/mod",
+                        f"{system}:tests/spread/other",
+                        f"{system}:tests/spread/manual",
+                    ],
+                )
+
     def test_calculate_tests_filters_allowed_tests_per_backend(self) -> None:
         amd64 = "amd64:ubuntu-24.04"
         arm64 = "arm64:ubuntu-24.04"

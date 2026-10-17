@@ -97,6 +97,7 @@ Default paths:
 
 ## Notes
 
+- If any changed file is under `tests/` (spread tasks, helpers, or tooling), every allowed test is returned.
 - Only Go source files are used when resolving changed-file lookups; Go unit test files (`_test.go`) are ignored because they never appear in spread coverage.
 - `calculate-tests` requires structured JSON (`changed-files-json`) with `modified`, `added`, and `deleted` keys.
 - `calculate-tests` requires an allowed tests list (`tests`) and uses the same selection logic as `src/calculate_tests.py`.

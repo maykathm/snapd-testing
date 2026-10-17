@@ -35,6 +35,12 @@ class TestExecutionService:
         # as unmatched would select every test.
         return path.endswith(".go") and not path.endswith("_test.go")
 
+    @staticmethod
+    def _is_test_script(path: str) -> bool:
+        # Spread tests and their helpers are not part of the coverage data,
+        # so any change under tests/ requires running everything.
+        return path.startswith("tests/")
+
     def _load_added_tests(self) -> list[str]:
         if not self.added_spread_tests_path.exists():
             return []
@@ -83,6 +89,9 @@ class TestExecutionService:
 
     def calculate_tests(self, changed_files: Any, backend_systems: list[str], tests: list[str]) -> list[str]:
         changed_files_by_type = self._normalize_changed_files(changed_files)
+        run_all = any(
+            self._is_test_script(path) for paths in changed_files_by_type.values() for path in paths
+        )
         for key, paths in changed_files_by_type.items():
             changed_files_by_type[key] = [path for path in paths if self._is_go_source(path)]
 
@@ -95,6 +104,10 @@ class TestExecutionService:
                 value = added.strip()
                 if value:
                     allowed_tests.append(f"{backend_system}:{value}")
+
+            if run_all:
+                resolved_tests.extend(self._unique_keep_order(allowed_tests))
+                continue
 
             selected = calculate_tests_to_execute(
                 system=backend_system,
