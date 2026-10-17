@@ -102,15 +102,14 @@ class TestExecutionService:
     def calculate_tests(self, changed_files: Any, backend_systems: list[str], tests: list[str]) -> list[str]:
         changed_files_by_type = self._normalize_changed_files(changed_files)
 
-        added_tests = self._load_added_tests()
-        allowed_by_system: dict[str, list[str]] = {}
-        for backend_system in backend_systems:
-            allowed_tests = self._tests_for_system(backend_system, tests)
-            for added in added_tests:
-                value = added.strip()
-                if value:
-                    allowed_tests.append(f"{backend_system}:{value}")
-            allowed_by_system[backend_system] = self._unique_keep_order(allowed_tests)
+        # Added tests are always selected, but only where they are among the
+        # allowed tests, so the result stays a subset of the input. An added
+        # test without a variant selects all of its variants.
+        added_tests = set(self._load_added_tests())
+        allowed_by_system: dict[str, list[str]] = {
+            backend_system: self._unique_keep_order(self._tests_for_system(backend_system, tests))
+            for backend_system in backend_systems
+        }
 
         # Spread tests and their helpers are not part of the coverage data. A
         # change inside a test's own folder selects that test; any other change
@@ -152,7 +151,10 @@ class TestExecutionService:
             resolved_tests.extend(
                 test
                 for test in allowed_tests
-                if test in selected or self._test_dir(backend_system, test) in changed_test_dirs
+                if test in selected
+                or self._test_dir(backend_system, test) in changed_test_dirs
+                or test[len(backend_system) + 1:] in added_tests
+                or self._test_dir(backend_system, test) in added_tests
             )
 
         return self._unique_keep_order(resolved_tests)

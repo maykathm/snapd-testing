@@ -53,6 +53,7 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
                 system: {
                     "snap/foo.go": [f"{system}:tests/spread/mod"],
                     "pkg/sub/existing.go": [f"{system}:tests/spread/dir"],
+                    "other/unchanged.go": [f"{system}:tests/spread/manual"],
                 }
             },
             base_tests={system: [f"{system}:tests/spread/base"]},
@@ -71,6 +72,7 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
                 f"{system}:tests/spread/mod",
                 f"{system}:tests/spread/dir",
                 f"{system}:tests/spread/unknown",
+                f"{system}:tests/spread/manual",
             ],
         )
 
@@ -109,7 +111,6 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
                 f"{system}:tests/spread/base",
                 f"{system}:tests/spread/mod",
                 f"{system}:tests/spread/unknown",
-                f"{system}:tests/spread/manual",
             ],
         )
 
@@ -179,7 +180,6 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
                         f"{system}:tests/spread/base",
                         f"{system}:tests/spread/mod",
                         f"{system}:tests/spread/other",
-                        f"{system}:tests/spread/manual",
                     ],
                 )
 
@@ -298,6 +298,38 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
         )
 
         self.assertEqual(selected, [f"{system}:tests/main/some-test", f"{system}:tests/main/mod"])
+
+    def test_calculate_tests_added_tests_stay_within_input(self) -> None:
+        amd64 = "amd64:ubuntu-24.04"
+        arm64 = "arm64:ubuntu-24.04"
+        service = self._make_service(
+            spread_map={
+                amd64: {"other/unchanged.go": [f"{amd64}:tests/main/added:v1", f"{amd64}:tests/main/added:v2"]},
+                arm64: {"other/unchanged.go": [f"{arm64}:tests/main/variant:v1", f"{arm64}:tests/main/variant:v2"]},
+            },
+            base_tests={},
+            added_tests=["tests/main/added", "tests/main/variant:v2", "tests/main/missing"],
+        )
+
+        selected = service.calculate_tests(
+            changed_files={"modified": [], "added": [], "deleted": []},
+            backend_systems=[amd64, arm64],
+            tests=[
+                f"{amd64}:tests/main/added:v1",
+                f"{amd64}:tests/main/added:v2",
+                f"{arm64}:tests/main/variant:v1",
+                f"{arm64}:tests/main/variant:v2",
+            ],
+        )
+
+        self.assertEqual(
+            selected,
+            [
+                f"{amd64}:tests/main/added:v1",
+                f"{amd64}:tests/main/added:v2",
+                f"{arm64}:tests/main/variant:v2",
+            ],
+        )
 
     def test_calculate_tests_filters_allowed_tests_per_backend(self) -> None:
         amd64 = "amd64:ubuntu-24.04"

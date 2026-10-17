@@ -103,5 +103,5 @@ Default paths:
 - `calculate-tests` requires structured JSON (`changed-files-json`) with `modified`, `added`, and `deleted` keys.
 - `calculate-tests` requires an allowed tests list (`tests`) and uses the same selection logic as `src/calculate_tests.py`.
 - Base tests are recalculated on MongoDB refresh using `query_features.py feat cover` with `--max-minutes` taken from charm config.
-- Tests listed in `added-spread-tests.txt` are always included for every backend:system passed to `calculate-tests`.
+- Tests listed in `added-spread-tests.txt` are always selected, but only for backend:systems whose `tests` input contains them; an entry without a variant selects all of its variants. The result of `calculate-tests` is always a subset of the `tests` input.
 - `mongodb-updated` runs the helper command, which in turn uses `query_features.py` to query MongoDB.
