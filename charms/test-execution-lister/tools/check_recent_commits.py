@@ -115,6 +115,7 @@ def explain(
     has_interface_users: bool,
 ) -> tuple[str, list[str]]:
     """Classify why calculate-tests selects what it does for the focus system."""
+    files = {key: [p for p in paths if not TestExecutionService._is_ignored(p)] for key, paths in files.items()}
     flat = [path for paths in files.values() for path in paths]
     build = [p for p in flat if TestExecutionService._requires_all_tests(p)]
     if build:

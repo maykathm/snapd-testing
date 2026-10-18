@@ -135,7 +135,6 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
             "go.mod",
             "go.sum",
             "cmd/.gitignore",
-            ".github/workflows/test.yaml",
             "po/fr.po",
             "run-checks",
         ):
@@ -164,6 +163,37 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
                     tests=tests,
                 )
                 self.assertEqual(selected, [f"{system}:tests/spread/base", f"{system}:tests/spread/other"])
+
+    def test_calculate_tests_ignores_docs_and_github(self) -> None:
+        system = "amd64:ubuntu-24.04"
+        service = self._make_service(
+            spread_map={system: {"snap/foo.go": [f"{system}:tests/spread/mod"]}},
+            base_tests={system: [f"{system}:tests/spread/base"]},
+        )
+        tests = [f"{system}:tests/spread/base", f"{system}:tests/spread/mod", f"{system}:tests/spread/other"]
+
+        for path in (
+            "docs/api/openapi.yaml",
+            "docs/api/tools/dark-theme.css",
+            "docs/tool.go",
+            ".github/workflows/test.yaml",
+            ".github/actions/run-spread/action.yaml",
+            ".github/scripts/helper.go",
+        ):
+            for key in ("modified", "added", "deleted"):
+                with self.subTest(path=path, key=key):
+                    changed_files = {"modified": [], "added": [], "deleted": []}
+                    changed_files[key] = [path]
+                    selected = service.calculate_tests(changed_files=changed_files, backend_systems=[system], tests=tests)
+                    self.assertEqual(selected, [f"{system}:tests/spread/base", f"{system}:tests/spread/other"])
+
+        # they do not hide other changes
+        selected = service.calculate_tests(
+            changed_files={"modified": ["docs/api/openapi.yaml", "snap/foo.go"], "added": [], "deleted": []},
+            backend_systems=[system],
+            tests=tests,
+        )
+        self.assertEqual(selected, tests)
 
     def test_calculate_tests_ignores_unit_test_packages(self) -> None:
         system = "amd64:ubuntu-24.04"

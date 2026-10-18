@@ -50,6 +50,9 @@ SPREAD_USED_TEST_PACKAGES = ("asserts/assertstest",)
 
 # Documentation cannot affect spread tests.
 DOC_EXTENSIONS = (".md", ".rst")
+# Folders whose changes never affect spread tests and so are ignored entirely:
+# the API documentation site and the GitHub CI configuration.
+IGNORED_PREFIXES = ("docs/", ".github/")
 # C unit test files, which only affect unit tests.
 C_UNIT_TEST_SUFFIXES = ("-test.c", "-test.h")
 
@@ -97,6 +100,10 @@ class TestExecutionService:
             if rest and "/" in rest:
                 return f"{suite}/{rest.split('/', 1)[0]}"
         return None
+
+    @staticmethod
+    def _is_ignored(path: str) -> bool:
+        return path.startswith(IGNORED_PREFIXES)
 
     @staticmethod
     def _requires_all_tests(path: str) -> bool:
@@ -160,7 +167,10 @@ class TestExecutionService:
         return out
 
     def calculate_tests(self, changed_files: Any, backend_systems: list[str], tests: list[str]) -> list[str]:
-        changed_files_by_type = self._normalize_changed_files(changed_files)
+        changed_files_by_type = {
+            key: [path for path in paths if not self._is_ignored(path)]
+            for key, paths in self._normalize_changed_files(changed_files).items()
+        }
 
         # Added tests are always selected, but only where they are among the
         # allowed tests, so the result stays a subset of the input. An added
