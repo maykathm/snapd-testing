@@ -85,6 +85,31 @@ def build_execution_map(fq: FeatureQuery) -> dict[str, dict[str, list[str]]]:
     return output
 
 
+def build_interface_users(fq: FeatureQuery) -> dict[str, dict[str, list[str]]]:
+    """
+    Returns, per system, the tests that connected each interface, taken from
+    the interfaces feature. Many interfaces have no coverage of their own (their
+    code runs in shared files), so this is how changes to them are matched.
+    """
+    timestamp, systems = _latest_timestamp_and_systems(fq)
+    output: dict[str, dict[str, list[str]]] = {}
+    for system in systems:
+        features = fq.query_features("feat sys", f"-t {timestamp} -s {system} --exclude coverages cmds endpoints ensures tasks changes")
+        if 'tests' not in features:
+            continue
+        users: dict[str, set[str]] = {}
+        for test in features['tests']:
+            # like the execution map, failed tests are left out so they are always selected
+            if test.get('success') is False:
+                continue
+            name = get_test_name(system, test['suite'], test['task_name'], test['variant'])
+            for interface in test.get('interfaces') or []:
+                if interface.get('name'):
+                    users.setdefault(interface['name'], set()).add(name)
+        output[system] = {interface: sorted(tests) for interface, tests in users.items()}
+    return output
+
+
 def build_base_tests(
     fq: FeatureQuery,
     max_minutes: int,
@@ -103,7 +128,7 @@ def build_base_tests(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="refresh spread-execution-map.json and base-executions.json using query_features.py")
+    parser = argparse.ArgumentParser(description="refresh spread-execution-map.json, interface-users.json and base-executions.json using query_features.py")
     parser.add_argument("--query-features-path", required=True, type=str)
     parser.add_argument("--credentials-path", required=True, type=str)
     parser.add_argument("--output-dir", required=True, type=str)
@@ -129,6 +154,10 @@ def main() -> None:
     output_path.mkdir(parents=True, exist_ok=True)
     execution_path = Path(os.path.join(output_path, "spread-execution-map.json"))
     execution_path.write_text(json.dumps(execution_map, indent=2, sort_keys=True), encoding="utf-8")
+
+    interface_users = build_interface_users(fq)
+    interface_users_path = Path(os.path.join(output_path, "interface-users.json"))
+    interface_users_path.write_text(json.dumps(interface_users, indent=2, sort_keys=True), encoding="utf-8")
 
     base_tests = build_base_tests(
         fq,

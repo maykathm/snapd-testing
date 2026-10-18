@@ -11,6 +11,7 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIR))
 
 from calculate_tests import (  # noqa: E402
+    _interface_name,
     _load_json,
     _matching_tests_for_directory,
     _matching_tests_for_modified_file,
@@ -214,3 +215,86 @@ class CalculateTestsUnitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InterfaceUsersTests(unittest.TestCase):
+    system = "amd64:ubuntu-24.04"
+
+    def _calculate(self, modified: list[str], interface_users: dict | None) -> list[str]:
+        system = self.system
+        tests = [
+            f"{system}:tests/main/base",
+            f"{system}:tests/main/cups-coverage",
+            f"{system}:tests/main/cups-connects",
+            f"{system}:tests/main/xilinx-connects:v1",
+            f"{system}:tests/main/other",
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            (data_dir / "spread-execution-map.json").write_text(
+                json.dumps(
+                    {
+                        system: {
+                            "interfaces/builtin/cups.go": [f"{system}:tests/main/cups-coverage"],
+                            "interfaces/builtin/common.go": [
+                                f"{system}:tests/main/cups-connects",
+                                f"{system}:tests/main/xilinx-connects:v1",
+                                f"{system}:tests/main/other",
+                            ],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (data_dir / "base-executions.json").write_text(json.dumps({system: ["tests/main/base"]}), encoding="utf-8")
+            if interface_users is not None:
+                (data_dir / "interface-users.json").write_text(json.dumps(interface_users), encoding="utf-8")
+            return calculate_tests_to_execute(
+                system=system,
+                tests=tests,
+                changed_files={"modified": modified, "added": [], "deleted": []},
+                directory=str(data_dir),
+            )
+
+    def test_interface_name(self) -> None:
+        self.assertEqual(_interface_name("interfaces/builtin/cups_control.go"), "cups-control")
+        self.assertEqual(_interface_name("interfaces/builtin/autopilot.go"), "autopilot-introspection")
+        self.assertIsNone(_interface_name("interfaces/builtin/cups_test.go"))
+        self.assertIsNone(_interface_name("interfaces/builtin/sub/file.go"))
+        self.assertIsNone(_interface_name("interfaces/apparmor/backend.go"))
+
+    def test_covered_interface_adds_connection_users(self) -> None:
+        system = self.system
+        users = {system: {"cups": [f"{system}:tests/main/cups-connects"]}}
+        self.assertEqual(
+            self._calculate(["interfaces/builtin/cups.go"], users),
+            [f"{system}:tests/main/base", f"{system}:tests/main/cups-coverage", f"{system}:tests/main/cups-connects"],
+        )
+
+    def test_uncovered_interface_uses_connection_users(self) -> None:
+        system = self.system
+        users = {system: {"xilinx-dma": [f"{system}:tests/main/xilinx-connects:v1"]}}
+        self.assertEqual(
+            self._calculate(["interfaces/builtin/xilinx_dma.go"], users),
+            [f"{system}:tests/main/base", f"{system}:tests/main/xilinx-connects:v1"],
+        )
+
+    def test_uncovered_interface_nobody_connects_selects_nothing_extra(self) -> None:
+        system = self.system
+        self.assertEqual(
+            self._calculate(["interfaces/builtin/spi.go"], {system: {}}),
+            [f"{system}:tests/main/base"],
+        )
+
+    def test_without_interface_data_uncovered_interface_selects_everything(self) -> None:
+        system = self.system
+        everything = [
+            f"{system}:tests/main/base",
+            f"{system}:tests/main/cups-coverage",
+            f"{system}:tests/main/cups-connects",
+            f"{system}:tests/main/xilinx-connects:v1",
+            f"{system}:tests/main/other",
+        ]
+        # no interface-users.json at all, or no entry for this system
+        self.assertEqual(self._calculate(["interfaces/builtin/xilinx_dma.go"], None), everything)
+        self.assertEqual(self._calculate(["interfaces/builtin/xilinx_dma.go"], {"other:system": {}}), everything)

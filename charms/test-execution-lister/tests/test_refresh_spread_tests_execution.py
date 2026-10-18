@@ -172,6 +172,59 @@ class BuildExecutionMapTests(unittest.TestCase):
             self.assertEqual(call.args, expected_calls[idx][0])
 
 
+class BuildInterfaceUsersTests(unittest.TestCase):
+    def test_build_interface_users(self) -> None:
+        fq = Mock()
+        fq.query_features.side_effect = [
+            [{"timestamp": "ts-1", "systems": ["s1", "s2"]}],
+            {
+                "tests": [
+                    {
+                        "suite": "tests/main",
+                        "task_name": "a",
+                        "variant": "",
+                        "success": True,
+                        "interfaces": [
+                            {"name": "home", "plug_snap_type": "app", "slot_snap_type": "snapd"},
+                            {"name": "cups-control", "plug_snap_type": "app", "slot_snap_type": "app"},
+                        ],
+                    },
+                    {
+                        "suite": "tests/main",
+                        "task_name": "b",
+                        "variant": "v1",
+                        "interfaces": [{"name": "home", "plug_snap_type": "app", "slot_snap_type": "snapd"}],
+                    },
+                    {
+                        "suite": "tests/main",
+                        "task_name": "failed",
+                        "variant": "",
+                        "success": False,
+                        "interfaces": [{"name": "home", "plug_snap_type": "app", "slot_snap_type": "snapd"}],
+                    },
+                    {"suite": "tests/main", "task_name": "none", "variant": ""},
+                ]
+            },
+            {},
+        ]
+
+        output = refresh.build_interface_users(fq)
+
+        self.assertEqual(
+            output,
+            {
+                "s1": {
+                    "cups-control": ["s1:tests/main/a"],
+                    "home": ["s1:tests/main/a", "s1:tests/main/b:v1"],
+                }
+            },
+        )
+        self.assertEqual(
+            fq.query_features.call_args_list[1].args,
+            ("feat sys", "-t ts-1 -s s1 --exclude coverages cmds endpoints ensures tasks changes"),
+        )
+
+
 class BuildBaseTests(unittest.TestCase):
     def test_build_base_tests_without_exclude(self) -> None:
         fq = Mock()
@@ -240,6 +293,7 @@ class MainTests(unittest.TestCase):
 
             execution_map = {"s1": {"snap/foo.go": ["s1:tests/spread/a"]}}
             base_tests = {"s1": ["s1:tests/spread/base"]}
+            interface_users = {"s1": {"home": ["s1:tests/spread/a"]}}
 
             argv = [
                 "prog",
@@ -259,11 +313,15 @@ class MainTests(unittest.TestCase):
             ) as map_mock, patch(
                 "refresh_spread_tests_execution.build_base_tests",
                 return_value=base_tests,
-            ) as base_mock:
+            ) as base_mock, patch(
+                "refresh_spread_tests_execution.build_interface_users",
+                return_value=interface_users,
+            ) as interface_mock:
                 refresh.main()
 
             map_mock.assert_called_once()
             base_mock.assert_called_once()
+            interface_mock.assert_called_once()
             self.assertEqual(base_mock.call_args.args[1], 42)
             self.assertEqual(base_mock.call_args.args[2], ["coverages"])
 
@@ -272,6 +330,8 @@ class MainTests(unittest.TestCase):
 
             self.assertEqual(written_execution_map, execution_map)
             self.assertEqual(written_base_tests, base_tests)
+            written_interface_users = json.loads((output_dir / "interface-users.json").read_text(encoding="utf-8"))
+            self.assertEqual(written_interface_users, interface_users)
 
     def test_main_raises_when_query_features_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

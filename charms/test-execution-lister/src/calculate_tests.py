@@ -10,6 +10,22 @@ import json
 from pathlib import Path
 
 
+INTERFACE_USERS_FILE = "interface-users.json"
+_INTERFACES_DIR = "interfaces/builtin/"
+# interface files not named after their interface
+_INTERFACE_NAME_EXCEPTIONS = {"autopilot.go": "autopilot-introspection"}
+
+
+def _interface_name(file_path: str) -> str | None:
+	"""Return the interface defined by an interfaces/builtin/<name>.go file."""
+	if not file_path.startswith(_INTERFACES_DIR) or not file_path.endswith(".go"):
+		return None
+	file_name = file_path[len(_INTERFACES_DIR):]
+	if "/" in file_name or file_name.endswith("_test.go"):
+		return None
+	return _INTERFACE_NAME_EXCEPTIONS.get(file_name, file_name[: -len(".go")].replace("_", "-"))
+
+
 def _normalize_test_name(system: str, test_name: str) -> str:
 	prefix = f"{system}:"
 	if test_name.startswith(prefix):
@@ -55,6 +71,9 @@ def calculate_tests_to_execute(
 	Rules:
 	- Start from base executions for the given system.
 	- Add tests related to modified files by exact file match in spread map.
+	- For modified interfaces/builtin/<name>.go files, also add the tests that
+	  connected the interface (interface-users.json); with that data, such a
+	  file never counts as unmatched.
 	- Add tests related to added/deleted files by immediate directory prefix.
 	- If any modified file has no match in spread map, return all allowed tests.
 	- Include allowed tests missing from spread map for this system.
@@ -66,6 +85,10 @@ def calculate_tests_to_execute(
 
 	spread_map_for_system: dict[str, list[str]] = spread_map.get(system, {})
 	base_tests_for_system: list[str] = base_executions.get(system, [])
+	interface_users_path = data_dir / INTERFACE_USERS_FILE
+	interface_users_for_system: dict[str, list[str]] | None = (
+		_load_json(interface_users_path).get(system) if interface_users_path.exists() else None
+	)
 
 	selected_normalized: set[str] = {
 		_normalize_test_name(system, test_name) for test_name in base_tests_for_system
@@ -74,7 +97,10 @@ def calculate_tests_to_execute(
 	modified_files = changed_files.get("modified", [])
 	for file_path in modified_files:
 		matches = _matching_tests_for_modified_file(file_path, spread_map_for_system)
-		if not matches:
+		interface = _interface_name(file_path)
+		if interface is not None and interface_users_for_system is not None:
+			matches |= set(interface_users_for_system.get(interface, []))
+		elif not matches:
 			return list(tests)
 		selected_normalized.update(_normalize_test_name(system, name) for name in matches)
 

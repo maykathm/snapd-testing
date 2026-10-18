@@ -32,6 +32,7 @@ from pathlib import Path
 CHARM_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CHARM_DIR / "src"))
 
+from calculate_tests import _interface_name  # noqa: E402
 from service_api import TestExecutionService  # noqa: E402
 
 DEFAULT_FOCUS = "openstack:ubuntu-24.04-64"
@@ -108,14 +109,22 @@ def spread_lists(args: argparse.Namespace, sha: str, systems: list[str]) -> dict
     return {system: path.read_text(encoding="utf-8").split() for system, path in wanted.items()}
 
 
-def explain(files: dict[str, list[str]], spread_map_for_focus: dict[str, list[str]]) -> tuple[str, list[str]]:
+def explain(
+    files: dict[str, list[str]],
+    spread_map_for_focus: dict[str, list[str]],
+    has_interface_users: bool,
+) -> tuple[str, list[str]]:
     """Classify why calculate-tests selects what it does for the focus system."""
     flat = [path for paths in files.values() for path in paths]
     shared = [p for p in flat if TestExecutionService._is_test_script(p) and TestExecutionService._owning_test_dir(p) is None]
     if shared:
         return "all: shared tests/ file", shared
     go = [p for p in files["modified"] if TestExecutionService._is_go_source(p)]
-    uncovered = [p for p in go if p not in spread_map_for_focus]
+    # with connection data, interface files are matched through it instead
+    uncovered = [
+        p for p in go
+        if p not in spread_map_for_focus and not (has_interface_users and _interface_name(p))
+    ]
     if uncovered:
         return "all: Go file without coverage", uncovered
     folders = sorted({TestExecutionService._owning_test_dir(p) for p in flat if TestExecutionService._is_test_script(p)} - {None})
@@ -152,6 +161,8 @@ def main() -> None:
         refresh_data(args)
     spread_map = json.loads(map_path.read_text(encoding="utf-8"))
     base = json.loads(base_path.read_text(encoding="utf-8"))
+    interface_users_path = args.data_dir / "interface-users.json"
+    interface_users = json.loads(interface_users_path.read_text(encoding="utf-8")) if interface_users_path.exists() else {}
 
     if args.fetch:
         remote, _, branch = args.ref.partition("/")
@@ -191,7 +202,7 @@ def main() -> None:
         if not set(selected) <= set(all_tests):
             raise SystemExit(f"{commit[:10]}: selection is not a subset of the input")
         focus_selected = [t for t in selected if t.startswith(f"{focus}:")]
-        reason, because = explain(files, spread_map.get(focus, {}))
+        reason, because = explain(files, spread_map.get(focus, {}), focus in interface_users)
         rows.append({
             "commit": commit, "subject": subject, "reason": reason, "because": because,
             "files": files, "selected": len(focus_selected), "all_selected": len(selected),
