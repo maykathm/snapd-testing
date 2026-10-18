@@ -40,6 +40,14 @@ SPREAD_SUITES = (
     "tests/upgrade",
 )
 
+# Go packages that only unit tests use: any folder ending in "test" (e.g.
+# overlord/snapstate/snapstatetest) plus these, and testdata folders, which Go
+# builds ignore. Like _test.go files they cannot affect spread tests.
+UNIT_TEST_PACKAGES = ("testutil", "testtime", "testdata")
+# Test helper packages that spread tests do use, through programs in tests/lib
+# such as the fake store.
+SPREAD_USED_TEST_PACKAGES = ("asserts/assertstest",)
+
 
 class TestExecutionService:
     """Core logic behind API operations."""
@@ -54,9 +62,18 @@ class TestExecutionService:
 
     @staticmethod
     def _is_go_source(path: str) -> bool:
-        # Go unit test files never appear in spread coverage, so treating them
-        # as unmatched would select every test.
-        return path.endswith(".go") and not path.endswith("_test.go")
+        # Go unit test files and unit test helper packages never appear in
+        # spread coverage, so treating them as unmatched would select every test.
+        if not path.endswith(".go") or path.endswith("_test.go"):
+            return False
+        return not TestExecutionService._is_unit_test_package(path)
+
+    @staticmethod
+    def _is_unit_test_package(path: str) -> bool:
+        package = path.rsplit("/", 1)[0] if "/" in path else ""
+        if any(package == p or package.startswith(p + "/") for p in SPREAD_USED_TEST_PACKAGES):
+            return False
+        return any(part.endswith("test") or part in UNIT_TEST_PACKAGES for part in package.split("/") if part)
 
     @staticmethod
     def _is_test_script(path: str) -> bool:

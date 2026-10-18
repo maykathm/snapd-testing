@@ -114,6 +114,52 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
             ],
         )
 
+    def test_calculate_tests_ignores_unit_test_packages(self) -> None:
+        system = "amd64:ubuntu-24.04"
+        service = self._make_service(
+            spread_map={
+                system: {
+                    "snap/foo.go": [f"{system}:tests/spread/mod"],
+                    "overlord/snapstate/handlers.go": [f"{system}:tests/spread/dir"],
+                    "asserts/asserts.go": [f"{system}:tests/spread/asserts"],
+                }
+            },
+            base_tests={system: [f"{system}:tests/spread/base"]},
+        )
+        tests = [
+            f"{system}:tests/spread/base",
+            f"{system}:tests/spread/mod",
+            f"{system}:tests/spread/dir",
+            f"{system}:tests/spread/asserts",
+        ]
+
+        selected = service.calculate_tests(
+            changed_files={
+                "modified": [
+                    "snap/foo.go",
+                    "overlord/snapstate/snapstatetest/snapstate.go",
+                    "testutil/checkers.go",
+                    "testtime/timer.go",
+                    "osutil/disks/testdata/fake.go",
+                ],
+                # unit test helpers do not pull in tests from their parent folder
+                "added": ["overlord/snapstate/snapstatetest/new.go"],
+                "deleted": [],
+            },
+            backend_systems=[system],
+            tests=tests,
+        )
+        self.assertEqual(selected, [f"{system}:tests/spread/base", f"{system}:tests/spread/mod"])
+
+        # assertstest is used by spread tests through the fake store, and has no
+        # coverage, so a change to it still selects everything
+        selected = service.calculate_tests(
+            changed_files={"modified": ["asserts/assertstest/assertstest.go"], "added": [], "deleted": []},
+            backend_systems=[system],
+            tests=tests,
+        )
+        self.assertEqual(selected, tests)
+
     def test_calculate_tests_ignores_go_unit_test_files(self) -> None:
         system = "amd64:ubuntu-24.04"
         service = self._make_service(
