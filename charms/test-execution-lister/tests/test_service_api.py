@@ -114,6 +114,57 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
             ],
         )
 
+    def test_calculate_tests_returns_all_on_non_go_changes(self) -> None:
+        system = "amd64:ubuntu-24.04"
+        service = self._make_service(
+            spread_map={system: {"snap/foo.go": [f"{system}:tests/spread/mod"]}},
+            base_tests={system: [f"{system}:tests/spread/base"]},
+        )
+        tests = [f"{system}:tests/spread/base", f"{system}:tests/spread/mod", f"{system}:tests/spread/other"]
+
+        for path in (
+            "cmd/snap-confine/snap-confine.c",
+            "cmd/snap-confine/mount-support.h",
+            "cmd/snap-confine/snap-confine.apparmor.in",
+            "cmd/Makefile.am",
+            "build-aux/snap/snapcraft.yaml",
+            "packaging/ubuntu-16.04/control",
+            "data/systemd/snapd.service.in",
+            "c-vendor/squashfuse/ll.c",
+            "spread.yaml",
+            "go.mod",
+            "go.sum",
+            "cmd/.gitignore",
+            ".github/workflows/test.yaml",
+            "po/fr.po",
+            "run-checks",
+        ):
+            for key in ("modified", "added", "deleted"):
+                with self.subTest(path=path, key=key):
+                    changed_files = {"modified": [], "added": [], "deleted": []}
+                    changed_files[key] = [path]
+                    selected = service.calculate_tests(changed_files=changed_files, backend_systems=[system], tests=tests)
+                    self.assertEqual(selected, tests)
+
+        # docs, C unit tests and unit test data do not affect spread tests
+        for path in (
+            "cmd/snap-confine/README.md",
+            "packaging/README.md",
+            "HACKING.md",
+            "docs/interfaces.rst",
+            "cmd/snap-confine/mount-support-test.c",
+            "cmd/libsnap-confine-private/utils-test.h",
+            "cmd/snap-update-ns/testdata/opt/fstab",
+            "overlord/snapstate/snapstatetest/fixture.json",
+        ):
+            with self.subTest(path=path):
+                selected = service.calculate_tests(
+                    changed_files={"modified": [path], "added": [], "deleted": []},
+                    backend_systems=[system],
+                    tests=tests,
+                )
+                self.assertEqual(selected, [f"{system}:tests/spread/base", f"{system}:tests/spread/other"])
+
     def test_calculate_tests_ignores_unit_test_packages(self) -> None:
         system = "amd64:ubuntu-24.04"
         service = self._make_service(

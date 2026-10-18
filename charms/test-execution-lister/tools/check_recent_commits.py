@@ -116,6 +116,9 @@ def explain(
 ) -> tuple[str, list[str]]:
     """Classify why calculate-tests selects what it does for the focus system."""
     flat = [path for paths in files.values() for path in paths]
+    build = [p for p in flat if TestExecutionService._requires_all_tests(p)]
+    if build:
+        return "all: non-Go file", build
     shared = [p for p in flat if TestExecutionService._is_test_script(p) and TestExecutionService._owning_test_dir(p) is None]
     if shared:
         return "all: shared tests/ file", shared

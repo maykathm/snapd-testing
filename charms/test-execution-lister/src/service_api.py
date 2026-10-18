@@ -48,6 +48,11 @@ UNIT_TEST_PACKAGES = ("testutil", "testtime", "testdata")
 # such as the fake store.
 SPREAD_USED_TEST_PACKAGES = ("asserts/assertstest",)
 
+# Documentation cannot affect spread tests.
+DOC_EXTENSIONS = (".md", ".rst")
+# C unit test files, which only affect unit tests.
+C_UNIT_TEST_SUFFIXES = ("-test.c", "-test.h")
+
 
 class TestExecutionService:
     """Core logic behind API operations."""
@@ -92,6 +97,21 @@ class TestExecutionService:
             if rest and "/" in rest:
                 return f"{suite}/{rest.split('/', 1)[0]}"
         return None
+
+    @staticmethod
+    def _requires_all_tests(path: str) -> bool:
+        """
+        Whether a changed file requires running every test. Non-Go files have
+        no coverage data, so any change to one (C code, packaging, data files,
+        spread.yaml, go.mod, ...) runs everything, except for the files with
+        rules of their own: spread tests and their helpers under tests/,
+        documentation, and files that only unit tests use.
+        """
+        if path.endswith(".go") or TestExecutionService._is_test_script(path):
+            return False
+        if path.endswith(DOC_EXTENSIONS) or path.endswith(C_UNIT_TEST_SUFFIXES):
+            return False
+        return not TestExecutionService._is_unit_test_package(path)
 
     def _load_added_tests(self) -> list[str]:
         if not self.added_spread_tests_path.exists():
@@ -160,6 +180,9 @@ class TestExecutionService:
         run_all = False
         for paths in changed_files_by_type.values():
             for path in paths:
+                if self._requires_all_tests(path):
+                    run_all = True
+                    continue
                 if not self._is_test_script(path):
                     continue
                 owner = self._owning_test_dir(path)
