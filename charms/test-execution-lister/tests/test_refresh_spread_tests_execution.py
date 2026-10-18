@@ -200,6 +200,35 @@ class BuildBaseTests(unittest.TestCase):
         )
 
 
+    def test_build_base_tests_with_force_match_keywords(self) -> None:
+        fq = Mock()
+        fq.query_features.side_effect = [
+            [{"timestamp": "ts-base", "systems": ["s1"]}],
+            {"s1": ["s1:tests/spread/base"]},
+        ]
+
+        refresh.build_base_tests(fq, max_minutes=30, exclude=["coverages"], force_match_keywords=["refresh"])
+
+        self.assertEqual(
+            fq.query_features.call_args_list[1].args,
+            ("feat cover", "-t ts-base --max-minutes 30 --force-match-keywords refresh --exclude coverages"),
+        )
+
+    def test_build_base_tests_ignores_force_match_keywords_without_max_minutes(self) -> None:
+        fq = Mock()
+        fq.query_features.side_effect = [
+            [{"timestamp": "ts-base", "systems": ["s1"]}],
+            {"s1": ["s1:tests/spread/base"]},
+        ]
+
+        refresh.build_base_tests(fq, max_minutes=0, exclude=["coverages"], force_match_keywords=["refresh"])
+
+        self.assertEqual(
+            fq.query_features.call_args_list[1].args,
+            ("feat cover", "-t ts-base --max-minutes 0 --exclude coverages"),
+        )
+
+
 class MainTests(unittest.TestCase):
     def test_main_writes_output_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

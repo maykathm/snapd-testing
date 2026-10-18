@@ -89,9 +89,14 @@ def build_base_tests(
     fq: FeatureQuery,
     max_minutes: int,
     exclude: list[str],
+    force_match_keywords: list[str] | None = None,
 ) -> dict[str, list[str]]:
     timestamp, _ = _latest_timestamp_and_systems(fq)
     args = f"-t {timestamp} --max-minutes {max_minutes}"
+    # Without a time limit the base set already covers every feature, and
+    # query_features.py only accepts keywords together with --max-minutes.
+    if force_match_keywords and max_minutes > 0:
+        args += " --force-match-keywords " + " ".join(force_match_keywords)
     if exclude:
         args += " --exclude " + " ".join(exclude)
     return fq.query_features("feat cover", args)
@@ -103,6 +108,12 @@ def main() -> None:
     parser.add_argument("--credentials-path", required=True, type=str)
     parser.add_argument("--output-dir", required=True, type=str)
     parser.add_argument("--base-tests-max-minutes", default=0, type=int)
+    parser.add_argument(
+        "--base-tests-force-keywords",
+        nargs="*",
+        default=["refresh"],
+        help="features containing these keywords are always covered by the base tests, even beyond the max minutes",
+    )
     args = parser.parse_args()
 
     output_path = Path(args.output_dir)
@@ -123,6 +134,7 @@ def main() -> None:
         fq,
         args.base_tests_max_minutes,
         ["coverages"],
+        args.base_tests_force_keywords,
     )
     base_tests_output_path = Path(os.path.join(output_path), "base-executions.json")
     base_tests_output_path.write_text(json.dumps(base_tests, indent=2, sort_keys=True), encoding="utf-8")

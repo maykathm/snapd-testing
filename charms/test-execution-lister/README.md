@@ -116,6 +116,6 @@ tools/check_recent_commits.py --snapd ~/source/snapd --data-dir /tmp/tel \
 - `calculate-tests` requires structured JSON (`changed-files-json`) with `modified`, `added`, and `deleted` keys.
 - `calculate-tests` requires an allowed tests list (`tests`) and uses the same selection logic as `src/calculate_tests.py`.
 - Tests that failed in the coverage run are left out of `spread-execution-map.json`, so, like any allowed test missing from the map, they are always selected until a run where they pass replaces the data.
-- Base tests are recalculated on MongoDB refresh using `query_features.py feat cover` with `--max-minutes` taken from charm config.
+- Base tests are recalculated on MongoDB refresh using `query_features.py feat cover` with `--max-minutes` taken from charm config. When `base-tests-max-minutes` is above 0, `--force-match-keywords refresh` is also passed, so features mentioning refresh are always covered by the base tests even if that exceeds the time limit.
 - Tests listed in `added-spread-tests.txt` are always selected, but only for backend:systems whose `tests` input contains them; an entry without a variant selects all of its variants. The result of `calculate-tests` is always a subset of the `tests` input.
 - `mongodb-updated` runs the helper command, which in turn uses `query_features.py` to query MongoDB.
