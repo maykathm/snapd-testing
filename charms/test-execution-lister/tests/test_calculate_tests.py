@@ -10,6 +10,7 @@ import sys
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIR))
 
+import calculate_tests  # noqa: E402
 from calculate_tests import (  # noqa: E402
     _interface_name,
     _load_json,
@@ -298,3 +299,48 @@ class InterfaceUsersTests(unittest.TestCase):
         # no interface-users.json at all, or no entry for this system
         self.assertEqual(self._calculate(["interfaces/builtin/xilinx_dma.go"], None), everything)
         self.assertEqual(self._calculate(["interfaces/builtin/xilinx_dma.go"], {"other:system": {}}), everything)
+
+
+class CacheTests(unittest.TestCase):
+    def test_load_json_caches_until_file_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "data.json"
+            path.write_text(json.dumps({"a": 1}), encoding="utf-8")
+            first = _load_json(path)
+            self.assertIs(_load_json(path), first)
+
+            # a refresh replaces the file
+            tmp = Path(temp_dir) / "data.json.tmp"
+            tmp.write_text(json.dumps({"a": 1, "b": 2}), encoding="utf-8")
+            tmp.replace(path)
+            second = _load_json(path)
+            self.assertEqual(second, {"a": 1, "b": 2})
+            self.assertIs(_load_json(path), second)
+
+    def test_calculate_tests_follows_refreshed_map(self) -> None:
+        system = "amd64:ubuntu-24.04"
+        tests = [f"{system}:tests/main/a", f"{system}:tests/main/b"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            (data_dir / "base-executions.json").write_text(json.dumps({}), encoding="utf-8")
+            map_path = data_dir / "spread-execution-map.json"
+
+            def calculate():
+                return calculate_tests_to_execute(
+                    system=system,
+                    tests=tests,
+                    changed_files={"modified": ["src/a.go"], "added": [], "deleted": []},
+                    directory=str(data_dir),
+                )
+
+            # b has no coverage yet, so it always runs
+            map_path.write_text(json.dumps({system: {"src/a.go": [f"{system}:tests/main/a"]}}), encoding="utf-8")
+            self.assertEqual(calculate(), tests)
+
+            # after a refresh b has coverage elsewhere, so it is no longer selected
+            map_path.write_text(
+                json.dumps({system: {"src/a.go": [f"{system}:tests/main/a"], "src/b.go": [f"{system}:tests/main/b"]}}),
+                encoding="utf-8",
+            )
+            self.assertEqual(calculate(), [f"{system}:tests/main/a"])
+            self.assertEqual(sum(1 for key in calculate_tests._known_tests_cache if key[1] == system), 1)

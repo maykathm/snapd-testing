@@ -46,6 +46,16 @@ def _latest_timestamp_and_systems(fq: FeatureQuery) -> tuple[str, list[str]]:
     return str(latest), systems
 
 
+def write_json(path: Path, data) -> None:
+    """
+    Write json to path atomically, so the service, which caches these files
+    until they change, never reads a partially written one.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def get_test_name(system: str, suite: str, task_name: str, variant: str):
     if not task_name:
         return f"{system}:{suite}"
@@ -153,11 +163,11 @@ def main() -> None:
     execution_map = build_execution_map(fq)
     output_path.mkdir(parents=True, exist_ok=True)
     execution_path = Path(os.path.join(output_path, "spread-execution-map.json"))
-    execution_path.write_text(json.dumps(execution_map, indent=2, sort_keys=True), encoding="utf-8")
+    write_json(execution_path, execution_map)
 
     interface_users = build_interface_users(fq)
     interface_users_path = Path(os.path.join(output_path, "interface-users.json"))
-    interface_users_path.write_text(json.dumps(interface_users, indent=2, sort_keys=True), encoding="utf-8")
+    write_json(interface_users_path, interface_users)
 
     base_tests = build_base_tests(
         fq,
@@ -166,7 +176,7 @@ def main() -> None:
         args.base_tests_force_keywords,
     )
     base_tests_output_path = Path(os.path.join(output_path), "base-executions.json")
-    base_tests_output_path.write_text(json.dumps(base_tests, indent=2, sort_keys=True), encoding="utf-8")
+    write_json(base_tests_output_path, base_tests)
 
 
 if __name__ == "__main__":

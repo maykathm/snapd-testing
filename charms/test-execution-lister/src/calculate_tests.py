@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 from pathlib import Path
 
 
@@ -33,11 +34,55 @@ def _normalize_test_name(system: str, test_name: str) -> str:
 	return test_name
 
 
+# Parsed data files, kept until the file changes (i.e. until the next refresh),
+# keyed by path with the modification time and size they were read at. The
+# execution map is large, so reading it on every request is slow.
+_json_cache: dict[Path, tuple[tuple[int, int], dict]] = {}
+_json_cache_lock = threading.Lock()
+
+
 def _load_json(path: Path) -> dict:
-	if not path.exists():
-		raise RuntimeError(f"missing required file: {path}")
-	with path.open(encoding="utf-8") as handle:
-		return json.load(handle)
+	"""Return the parsed json file, from the cache unless the file changed.
+
+	The returned data is shared between callers and must not be modified.
+	"""
+	try:
+		stat = path.stat()
+	except FileNotFoundError:
+		raise RuntimeError(f"missing required file: {path}") from None
+	version = (stat.st_mtime_ns, stat.st_size)
+	with _json_cache_lock:
+		cached = _json_cache.get(path)
+		if cached is not None and cached[0] == version:
+			return cached[1]
+		with path.open(encoding="utf-8") as handle:
+			data = json.load(handle)
+		_json_cache[path] = (version, data)
+		return data
+
+
+# Normalized names of the tests in a system's part of the cached execution map,
+# keyed by that part's id; the part itself is kept to tell when it was replaced.
+_known_tests_cache: dict[tuple[int, str], tuple[dict, frozenset[str]]] = {}
+
+
+def _known_tests(system: str, spread_map_for_system: dict[str, list[str]]) -> frozenset[str]:
+	key = (id(spread_map_for_system), system)
+	with _json_cache_lock:
+		cached = _known_tests_cache.get(key)
+		if cached is not None and cached[0] is spread_map_for_system:
+			return cached[1]
+	known = frozenset(
+		_normalize_test_name(system, test_name)
+		for tests_for_file in spread_map_for_system.values()
+		for test_name in tests_for_file
+	)
+	with _json_cache_lock:
+		# drop entries for maps that were replaced by a refresh
+		for stale in [k for k in _known_tests_cache if k[1] == system]:
+			del _known_tests_cache[stale]
+		_known_tests_cache[key] = (spread_map_for_system, known)
+	return known
 
 
 def _matching_tests_for_modified_file(
@@ -111,10 +156,7 @@ def calculate_tests_to_execute(
 			matches = _matching_tests_for_directory(prefix, spread_map_for_system)
 			selected_normalized.update(_normalize_test_name(system, name) for name in matches)
 
-	spread_known_normalized: set[str] = set()
-	for tests_for_file in spread_map_for_system.values():
-		for test_name in tests_for_file:
-			spread_known_normalized.add(_normalize_test_name(system, test_name))
+	spread_known_normalized = _known_tests(system, spread_map_for_system)
 
 	result: list[str] = []
 	for test_name in tests:
