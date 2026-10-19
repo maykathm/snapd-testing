@@ -72,11 +72,12 @@ The preferred format is a single JSON string, for example:
 }
 ```
 
-Example secret creation:
+Example secret creation (Juju 3.6). `juju add-secret` prints the secret's URI (`secret:...`); the secret must be granted to the application before the charm can read it:
 
 ```bash
 juju add-secret test-execution-lister-mongodb mongodb-credentials-json='{"host":"mongodb.example.internal","port":27017,"user":"snapd","password":"secret"}'
-juju config test-execution-lister mongodb-secret-id=<secret-id>
+juju grant-secret test-execution-lister-mongodb test-execution-lister
+juju config test-execution-lister mongodb-secret-id=<secret-uri>
 ```
 
 ## Actions
@@ -89,18 +90,21 @@ Actions are defined in [charmcraft.yaml](charmcraft.yaml):
 - `reconcile`: rebuilds charm-managed files and service state
 - `service-status`: returns the systemd status for the API service
 
-Example action calls:
+Example action calls (Juju 3.6; `juju run` waits for the action and prints its results):
 
 ```bash
-juju run-action test-execution-lister/0 calculate-tests \
+juju run test-execution-lister/0 calculate-tests \
   changed-files-json='{"modified":["snap/foo.go"],"added":["interfaces/new.go"],"deleted":[]}' \
   tests='amd64:ubuntu-24.04:tests/spread/foo,arm64:ubuntu-24.04:tests/spread/foo' \
   backend-systems='amd64:ubuntu-24.04,arm64:ubuntu-24.04'
 
-juju run-action test-execution-lister/0 add-tests \
-  tests='tests/spread/foo,tests/spread/bar'
+juju run test-execution-lister/0 add-tests tests='tests/spread/foo,tests/spread/bar'
 
-juju run-action test-execution-lister/0 mongodb-updated
+# a refresh takes a while; allow up to refresh-timeout-seconds plus a minute
+juju run test-execution-lister/0 mongodb-updated --wait 10m
+
+juju run test-execution-lister/0 reconcile
+juju run test-execution-lister/0 service-status
 ```
 
 ## Files on the unit
