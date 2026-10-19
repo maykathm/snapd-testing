@@ -143,6 +143,7 @@ class TestReconcile(CharmTestCase):
         self.assertEqual(config["query_features_path"], str(charm.SNAPD_DIR / "tests/utils/features/query_features.py"))
         command = config["refresh_command"]
         self.assertEqual(command[0], str(charm.VENV_DIR / "bin" / "python3"))
+        self.assertEqual(command[command.index("--base-tests-max-minutes") + 1], "15")
         # every refresh, however it is triggered, updates the features checkout first
         self.assertEqual(
             command[command.index("--snapd-dir"):],

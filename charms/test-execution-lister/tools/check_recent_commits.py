@@ -148,7 +148,7 @@ def main() -> None:
     parser.add_argument("--refresh", action="store_true", help="rebuild the execution data from mongodb even if present")
     parser.add_argument("--credentials", type=Path, help="mongodb credentials json (host, port, user, password) used to build the execution data")
     parser.add_argument("--query-features-path", type=Path, help="query_features.py to use (default: from --snapd)")
-    parser.add_argument("--base-tests-max-minutes", default=0, type=int, help="same as the charm config option")
+    parser.add_argument("--base-tests-max-minutes", default=15, type=int, help="same as the charm config option")
     parser.add_argument("--systems", nargs="+", help="backend:system values to check (default: openstack systems in the execution map)")
     parser.add_argument("--suites", nargs="+", default=["tests/main/"], help="suites passed to spread -list (default: tests/main/)")
     parser.add_argument("--added-tests", type=Path, help="added-spread-tests.txt to apply, like the charm does")

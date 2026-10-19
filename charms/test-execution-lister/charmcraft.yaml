@@ -59,8 +59,8 @@ config:
       description: "Optional command used to regenerate the execution data. If unset, built-in helper is used."
     base-tests-max-minutes:
       type: int
-      default: 0
-      description: "Maximum amount of execution time, in minutes, for the base test coverage set."
+      default: 15
+      description: "Maximum amount of execution time, in minutes, for the base test coverage set, which runs for every change. Features mentioning refresh are always covered, even beyond it. 0 means no limit (cover every feature)."
     refresh-timeout-seconds:
       type: int
       default: 300

@@ -25,7 +25,7 @@ Available config options are defined in [charmcraft.yaml](charmcraft.yaml):
 - `execution-data-dir`: directory containing `spread-execution-map.json`, `interface-users.json` and `base-executions.json`
 - `added-spread-tests-path`: path to the added tests text file
 - `refresh-helper-command`: optional override for the helper command that rebuilds `spread-execution-map.json` and `base-executions.json`
-- `base-tests-max-minutes`: maximum execution time, in minutes, for the base test coverage set
+- `base-tests-max-minutes`: maximum execution time, in minutes, for the base test coverage set that runs for every change, default `15`; `0` means no limit (cover every feature)
 - `refresh-timeout-seconds`: timeout used when refreshing from MongoDB
 - `refresh-jobs`: number of systems queried in parallel during a refresh, default `2`; each query can use several hundred MB of memory
 

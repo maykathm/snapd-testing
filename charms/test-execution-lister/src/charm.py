@@ -357,7 +357,7 @@ class TestExecutionListerCharm(CharmBase):
             "spread-execution-map-path": str(self.spread_tests_execution_path),
             "added-spread-tests-path": str(self.added_spread_tests_path),
             "base-executions-path": str(self.base_tests_path),
-            "base-tests-max-minutes": int(self.config.get("base-tests-max-minutes", 0)),
+            "base-tests-max-minutes": int(self.config.get("base-tests-max-minutes", 15)),
             "refresh-helper-command": str(self.config.get("refresh-helper-command") or "").strip(),
             "refresh-timeout-seconds": self.refresh_timeout_seconds,
             "refresh-command": config["refresh_command"],
@@ -384,7 +384,7 @@ class TestExecutionListerCharm(CharmBase):
             "--output-dir",
             str(self.execution_data_dir),
             "--base-tests-max-minutes",
-            str(int(self.config.get("base-tests-max-minutes", 0))),
+            str(int(self.config.get("base-tests-max-minutes", 15))),
             "--jobs",
             str(int(self.config.get("refresh-jobs", 2))),
         ]
