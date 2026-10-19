@@ -130,6 +130,16 @@ tools/check_recent_commits.py --snapd ~/source/snapd --data-dir /tmp/tel \
 - `--systems` and `--suites` choose what is listed (default: the openstack systems in the map, `tests/main/`); `--focus` picks the system shown in the table.
 - `--show-tests <commit>` prints the selected tests for one commit, and `--json` writes all results.
 
+## Checking a pull request against a running service
+
+`tools/check_pr.py` reports, for one snapd pull request, how many tests the service would run on each system in the pull request's `.github/workflows/data-fundamental-systems.json`. It reads the changed files from GitHub with the `gh` CLI, checks out the pull request in a temporary worktree of a local snapd checkout to list each system's tests with `spread -list`, and calls `POST /calculate-tests` once per system:
+
+```bash
+tools/check_pr.py 17856 --snapd ~/source/snapd --service http://<unit-address>:8181
+```
+
+Shared test files are rewritten with `tests/utils/features/shared_test_users.py` from the pull request, as CI would; `--shared-users <path>` uses another copy and `--no-shared-users` skips it. `--show-tests` prints the selected tests and `--json` writes all results.
+
 ## Notes
 
 - A changed file inside a test folder, `tests/<suite>/<test>/...` for the spread suites listed in `SPREAD_SUITES` in `src/service_api.py` (e.g. `tests/main/foo/task.yaml` or `tests/nested/manual/bar/script.sh`), selects that test, including all its variants, for the backend:systems whose `tests` input contains it. A changed test that is not in the input (e.g. a deleted test) selects nothing.
