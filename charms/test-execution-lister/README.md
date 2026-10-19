@@ -40,7 +40,7 @@ Failures while installing or configuring leave the unit blocked or waiting with 
 CI on the same cloud calls the service directly at `http://<unit-address>:<listen-port>` (port `8181` by default). The charm opens the port; depending on the cloud, `juju expose test-execution-lister` (optionally with `--to-cidrs` limited to the CI network) is needed to allow traffic to it. The API has no authentication, so only expose it to networks you trust.
 
 - `GET /health`: returns `{"status": "ok"}`
-- `POST /calculate-tests` with `{"changed_files": {"modified": [...], "added": [...], "deleted": [...]}, "backend_systems": [...], "tests": [...]}`: returns `{"tests": [...], "count": N}`, the subset of `tests` to run
+- `POST /calculate-tests` with `{"changed_files": {"modified": [...], "added": [...], "deleted": [...]}, "backend_systems": [...], "tests": [...]}`: returns `{"tests": [...], "count": N}`, the subset of `tests` to run. Without execution data (before the first refresh, or if a data file is missing) it returns all of `tests`.
 - `POST /add-tests` with `{"tests": [...]}`: appends to `added-spread-tests.txt`
 - `POST /mongodb-updated`: updates the features checkout and rebuilds the execution data from MongoDB; it answers when the refresh is done (about 30 seconds with 18 systems), so give the request a timeout of at least `refresh-timeout-seconds`
 

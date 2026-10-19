@@ -120,6 +120,11 @@ class TestExecutionService:
             return False
         return not TestExecutionService._is_unit_test_package(path)
 
+    def _missing_data_files(self) -> list[str]:
+        data_dir = self.spread_tests_execution_path.parent
+        required = (self.spread_tests_execution_path, data_dir / "base-executions.json")
+        return [str(path) for path in required if not path.exists()]
+
     def _load_added_tests(self) -> list[str]:
         if not self.added_spread_tests_path.exists():
             return []
@@ -188,6 +193,12 @@ class TestExecutionService:
         # everything.
         changed_test_dirs: set[str] = set()
         run_all = False
+        missing_data = self._missing_data_files()
+        if missing_data:
+            # e.g. before the first refresh: without data nothing can be
+            # excluded, so run everything rather than failing the request
+            logger.warning("execution data missing (%s), returning all allowed tests", ", ".join(missing_data))
+            run_all = True
         for paths in changed_files_by_type.values():
             for path in paths:
                 if self._requires_all_tests(path):

@@ -528,6 +528,24 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
             ],
         )
 
+    def test_calculate_tests_returns_all_without_data(self) -> None:
+        system = "amd64:ubuntu-24.04"
+        tests = [f"{system}:tests/spread/a", f"{system}:tests/spread/b"]
+        for missing in ("spread-execution-map.json", "base-executions.json"):
+            with self.subTest(missing=missing):
+                service = self._make_service(
+                    spread_map={system: {"snap/foo.go": [f"{system}:tests/spread/a"]}},
+                    base_tests={system: []},
+                )
+                (Path(self.temp_dir.name) / missing).unlink()
+                selected = service.calculate_tests(
+                    changed_files={"modified": ["snap/foo.go"], "added": [], "deleted": []},
+                    backend_systems=[system],
+                    tests=tests,
+                )
+                self.assertEqual(selected, tests)
+                self.tearDown()
+
     def test_calculate_tests_rejects_invalid_changed_files_type(self) -> None:
         system = "amd64:ubuntu-24.04"
         service = self._make_service(
@@ -583,6 +601,16 @@ class ApiHttpTests(unittest.TestCase):
                 return response.status, json.loads(response.read())
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
+
+    def test_calculate_tests_before_first_refresh(self):
+        for name in ("spread-execution-map.json", "base-executions.json"):
+            (Path(self.temp_dir.name) / name).unlink()
+        status, body = self._request(
+            "/calculate-tests",
+            {"changed_files": {"modified": ["snap/foo.go"], "added": [], "deleted": []},
+             "backend_systems": ["s1"], "tests": ["tests/main/a", "tests/main/b"]},
+        )
+        self.assertEqual((status, body["tests"]), (200, ["s1:tests/main/a", "s1:tests/main/b"]))
 
     def test_endpoints(self):
         status, body = self._request(
