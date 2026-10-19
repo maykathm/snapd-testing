@@ -10,7 +10,7 @@ from pathlib import Path
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from service_api import TestExecutionService  # noqa: E402
+from service_api import ApiHandler, TestExecutionService  # noqa: E402
 
 
 class TestExecutionServiceCalculateTests(unittest.TestCase):
@@ -541,3 +541,56 @@ class TestExecutionServiceCalculateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApiHttpTests(unittest.TestCase):
+    def setUp(self):
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        root = Path(self.temp_dir.name)
+        (root / "spread-execution-map.json").write_text(json.dumps({}), encoding="utf-8")
+        (root / "base-executions.json").write_text(json.dumps({}), encoding="utf-8")
+        previous = getattr(ApiHandler, "service", None)
+        ApiHandler.service = TestExecutionService({
+            "spread_tests_execution_path": str(root / "spread-execution-map.json"),
+            "added_spread_tests_path": str(root / "added-spread-tests.txt"),
+            "refresh_command": ["true"],
+        })
+        server = ThreadingHTTPServer(("127.0.0.1", 0), ApiHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+
+        def stop():
+            server.shutdown()
+            server.server_close()
+            ApiHandler.service = previous
+
+        self.addCleanup(stop)
+        self.base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def _request(self, path, payload=None):
+        import urllib.error
+        import urllib.request
+
+        data = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(
+            self.base_url + path, data=data, headers={"Content-Type": "application/json"}, method="POST" if data else "GET"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
+    def test_endpoints(self):
+        status, body = self._request(
+            "/calculate-tests",
+            {"changed_files": {"modified": [], "added": [], "deleted": []}, "backend_systems": ["s1"], "tests": ["tests/main/a"]},
+        )
+        self.assertEqual((status, body["tests"]), (200, ["s1:tests/main/a"]))
+        self.assertEqual(self._request("/add-tests", {"tests": ["tests/main/b"]}), (200, {"result": "ok", "added": 1}))
+        self.assertEqual(self._request("/health"), (200, {"status": "ok"}))
+        self.assertEqual(self._request("/calculate-tests", {"changed_files": []})[0], 400)
+        self.assertEqual(self._request("/unknown", {})[0], 404)

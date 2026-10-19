@@ -4,12 +4,42 @@
 """Helper to refresh spread-tests-execution and base-test mappings from mongodb metadata."""
 
 import argparse
+import concurrent.futures
 import json
 import subprocess
 import os
 import sys
 from pathlib import Path
 
+
+
+# the part of the snapd repository the refresh needs: query_features.py and its modules
+FEATURES_SUBDIR = "tests/utils/features"
+
+
+def _run_checked(cmd: list[str]) -> None:
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
+def fetch_snapd_features(snapd_dir: Path, url: str, ref: str, run=_run_checked) -> Path:
+    """
+    Update snapd_dir to a shallow, sparse checkout of only FEATURES_SUBDIR from
+    url at ref (a branch, tag or full commit SHA), and return the path of
+    query_features.py in it.
+    """
+    repo = str(snapd_dir)
+    if not (snapd_dir / ".git").exists():
+        run(["git", "init", "-q", repo])
+        run(["git", "-C", repo, "remote", "add", "origin", url])
+        run(["git", "-C", repo, "sparse-checkout", "set", FEATURES_SUBDIR])
+    else:
+        run(["git", "-C", repo, "remote", "set-url", "origin", url])
+    run(["git", "-C", repo, "fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", ref])
+    run(["git", "-C", repo, "checkout", "-q", "--force", "FETCH_HEAD"])
+    query_features = snapd_dir / FEATURES_SUBDIR / "query_features.py"
+    if not query_features.exists():
+        raise FileNotFoundError(f"query_features.py not found in {url} at {ref}: {query_features}")
+    return query_features
 
 
 class FeatureQuery:
@@ -66,69 +96,87 @@ def get_test_name(system: str, suite: str, task_name: str, variant: str):
     return f"{system}:{suite}/{task_name}:{variant}"
 
 
-def build_execution_map(fq: FeatureQuery) -> dict[str, dict[str, list[str]]]:
-    timestamp, systems = _latest_timestamp_and_systems(fq)
-    output: dict[str, dict[str, list[str]]] = {}
-    for system in systems:
-        coverages = fq.query_features("feat sys", f"-t {timestamp} -s {system} --exclude cmds interfaces endpoints ensures tasks changes")
-        if 'tests' not in coverages:
-            continue
-        output[system] = {}
-        for test in coverages['tests']:
-            # Failed tests stop recording coverage where they failed, so their
-            # coverage is incomplete. Leaving them out of the map makes them
-            # always selected, like any other test without coverage.
-            if 'coverages' not in test or test.get('success') is False:
-                continue
-            name = get_test_name(system, test['suite'], test['task_name'], test['variant'])
-            files = {
-                coverage['file'] 
-                for coverage in test['coverages']
-                if  coverage['func'] != 'init' and
-                    (not coverage['file'].startswith('interfaces/') or coverage['func'] != 'Name') and
-                    (not coverage['file'].startswith('interfaces/') or coverage['func'] != 'StaticInfo')
-            }
-            for file_path in files:
-                if file_path not in output[system]:
-                    output[system][file_path] = set()
-                output[system][file_path].add(name)
-        output[system] = {key: sorted(tests) for key, tests in output[system].items()}
-    
-    return output
+# features not needed to build the execution map and interface users
+SYSTEM_QUERY_EXCLUDE = "cmds endpoints ensures tasks changes"
 
 
-def build_interface_users(fq: FeatureQuery) -> dict[str, dict[str, list[str]]]:
-    """
-    Returns, per system, the tests that connected each interface, taken from
-    the interfaces feature. Many interfaces have no coverage of their own (their
-    code runs in shared files), so this is how changes to them are matched.
-    """
-    timestamp, systems = _latest_timestamp_and_systems(fq)
-    output: dict[str, dict[str, list[str]]] = {}
-    for system in systems:
-        features = fq.query_features("feat sys", f"-t {timestamp} -s {system} --exclude coverages cmds endpoints ensures tasks changes")
-        if 'tests' not in features:
+def system_execution_map(system: str, tests: list[dict]) -> dict[str, list[str]]:
+    """Returns, for one system, the tests that covered each file."""
+    output: dict[str, set[str]] = {}
+    for test in tests:
+        # Failed tests stop recording coverage where they failed, so their
+        # coverage is incomplete. Leaving them out of the map makes them
+        # always selected, like any other test without coverage.
+        if 'coverages' not in test or test.get('success') is False:
             continue
-        users: dict[str, set[str]] = {}
-        for test in features['tests']:
-            # like the execution map, failed tests are left out so they are always selected
-            if test.get('success') is False:
+        name = get_test_name(system, test['suite'], test['task_name'], test['variant'])
+        files = {
+            coverage['file']
+            for coverage in test['coverages']
+            if  coverage['func'] != 'init' and
+                (not coverage['file'].startswith('interfaces/') or coverage['func'] != 'Name') and
+                (not coverage['file'].startswith('interfaces/') or coverage['func'] != 'StaticInfo')
+        }
+        for file_path in files:
+            output.setdefault(file_path, set()).add(name)
+    return {key: sorted(names) for key, names in output.items()}
+
+
+def system_interface_users(system: str, tests: list[dict]) -> dict[str, list[str]]:
+    """
+    Returns, for one system, the tests that connected each interface, taken
+    from the interfaces feature. Many interfaces have no coverage of their own
+    (their code runs in shared files), so this is how changes to them are matched.
+    """
+    users: dict[str, set[str]] = {}
+    for test in tests:
+        # like the execution map, failed tests are left out so they are always selected
+        if test.get('success') is False:
+            continue
+        name = get_test_name(system, test['suite'], test['task_name'], test['variant'])
+        for interface in test.get('interfaces') or []:
+            if interface.get('name'):
+                users.setdefault(interface['name'], set()).add(name)
+    return {interface: sorted(names) for interface, names in users.items()}
+
+
+def build_system_data(
+    fq: FeatureQuery,
+    timestamp: str,
+    systems: list[str],
+    jobs: int,
+) -> tuple[dict[str, dict[str, list[str]]], dict[str, dict[str, list[str]]]]:
+    """
+    Returns the execution map and the interface users of all systems. Each
+    system is queried once, for coverage and interfaces together, and up to
+    jobs systems are queried in parallel. Each worker reduces its system's
+    feature data to its part of the outputs, so the large query results are
+    not all held in memory at once.
+    """
+    def build(system: str):
+        data = fq.query_features("feat sys", f"-t {timestamp} -s {system} --exclude {SYSTEM_QUERY_EXCLUDE}")
+        if 'tests' not in data:
+            return system, None, None
+        return system, system_execution_map(system, data['tests']), system_interface_users(system, data['tests'])
+
+    execution_map: dict[str, dict[str, list[str]]] = {}
+    interface_users: dict[str, dict[str, list[str]]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        for system, system_map, system_users in pool.map(build, systems):
+            if system_map is None:
                 continue
-            name = get_test_name(system, test['suite'], test['task_name'], test['variant'])
-            for interface in test.get('interfaces') or []:
-                if interface.get('name'):
-                    users.setdefault(interface['name'], set()).add(name)
-        output[system] = {interface: sorted(tests) for interface, tests in users.items()}
-    return output
+            execution_map[system] = system_map
+            interface_users[system] = system_users
+    return execution_map, interface_users
 
 
 def build_base_tests(
     fq: FeatureQuery,
+    timestamp: str,
     max_minutes: int,
     exclude: list[str],
     force_match_keywords: list[str] | None = None,
 ) -> dict[str, list[str]]:
-    timestamp, _ = _latest_timestamp_and_systems(fq)
     args = f"-t {timestamp} --max-minutes {max_minutes}"
     # Without a time limit the base set already covers every feature, and
     # query_features.py only accepts keywords together with --max-minutes.
@@ -151,9 +199,25 @@ def main() -> None:
         default=["refresh"],
         help="features containing these keywords are always covered by the base tests, even beyond the max minutes",
     )
+    parser.add_argument("--snapd-dir", type=str, help="snapd checkout to update before refreshing")
+    parser.add_argument("--snapd-repo-url", type=str, help="repository to update --snapd-dir from")
+    parser.add_argument("--snapd-ref", type=str, help="branch, tag or full commit SHA to update --snapd-dir to")
+    parser.add_argument(
+        "--jobs",
+        default=2,
+        type=int,
+        help="number of systems queried in parallel; each query_features.py process can use several hundred MB",
+    )
     args = parser.parse_args()
 
     output_path = Path(args.output_dir)
+
+    fetch_args = (args.snapd_dir, args.snapd_repo_url, args.snapd_ref)
+    if any(fetch_args) and not all(fetch_args):
+        raise RuntimeError("--snapd-dir, --snapd-repo-url and --snapd-ref must be given together")
+    if all(fetch_args):
+        # refresh with the current query_features.py, however the refresh was triggered
+        fetch_snapd_features(Path(args.snapd_dir), args.snapd_repo_url, args.snapd_ref)
 
     if not Path(args.query_features_path).exists():
         raise RuntimeError(f"query_features.py not found: {args.query_features_path}")
@@ -162,23 +226,22 @@ def main() -> None:
     
     fq = FeatureQuery(args.query_features_path, args.credentials_path)
 
-    execution_map = build_execution_map(fq)
-    output_path.mkdir(parents=True, exist_ok=True)
-    execution_path = Path(os.path.join(output_path, "spread-execution-map.json"))
-    write_json(execution_path, execution_map)
+    # one timestamp for all outputs, so they come from the same upload
+    timestamp, systems = _latest_timestamp_and_systems(fq)
 
-    interface_users = build_interface_users(fq)
-    interface_users_path = Path(os.path.join(output_path, "interface-users.json"))
-    write_json(interface_users_path, interface_users)
-
+    execution_map, interface_users = build_system_data(fq, timestamp, systems, args.jobs)
     base_tests = build_base_tests(
         fq,
+        timestamp,
         args.base_tests_max_minutes,
         ["coverages"],
         args.base_tests_force_keywords,
     )
-    base_tests_output_path = Path(os.path.join(output_path), "base-executions.json")
-    write_json(base_tests_output_path, base_tests)
+
+    output_path.mkdir(parents=True, exist_ok=True)
+    write_json(output_path / "spread-execution-map.json", execution_map)
+    write_json(output_path / "interface-users.json", interface_users)
+    write_json(output_path / "base-executions.json", base_tests)
 
 
 if __name__ == "__main__":

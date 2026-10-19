@@ -16,6 +16,8 @@ from ops.charm import ActionEvent, CharmBase, SecretChangedEvent
 from ops.main import main
 from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus, WaitingStatus
 
+from refresh_spread_tests_execution import FEATURES_SUBDIR, fetch_snapd_features
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,7 +32,7 @@ class TestExecutionListerCharm(CharmBase):
     SERVICE_STATE_MARKER_PATH = STATE_DIR / "service-state.marker"
     # sparse checkout of snapd with only the features folder
     SNAPD_DIR = STATE_DIR / "snapd"
-    FEATURES_SUBDIR = "tests/utils/features"
+    FEATURES_SUBDIR = FEATURES_SUBDIR
     # virtualenv the refresh helper and query_features.py run in
     VENV_DIR = STATE_DIR / "venv"
     APT_PACKAGES = ("git", "python3-venv")
@@ -96,6 +98,14 @@ class TestExecutionListerCharm(CharmBase):
     @property
     def refresh_timeout_seconds(self) -> int:
         return int(self.config.get("refresh-timeout-seconds", 300))
+
+    @property
+    def listen_host(self) -> str:
+        return str(self.config.get("listen-host") or "0.0.0.0")
+
+    @property
+    def listen_port(self) -> int:
+        return int(self.config.get("listen-port") or 8181)
 
     def _on_install(self, _event):
         self._reconcile_in_hook("installing test-execution-lister")
@@ -196,8 +206,7 @@ class TestExecutionListerCharm(CharmBase):
 
     def _on_mongodb_updated_action(self, event: ActionEvent):
         try:
-            # refresh with the current query_features.py
-            self._fetch_snapd_features()
+            # the refresh command updates the features checkout itself
             response = self._call_service(
                 endpoint="/mongodb-updated",
                 payload={},
@@ -268,6 +277,109 @@ class TestExecutionListerCharm(CharmBase):
         self.SERVICE_STATE_MARKER_PATH.write_text(service_state, encoding="utf-8")
         return True
 
+    @staticmethod
+    def _write_private_file(path: Path, content: str) -> None:
+        """Write a file only root can read, created with that mode and replaced atomically."""
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.replace(tmp, path)
+
+
+
+    def _install_packages(self) -> None:
+        """Install the apt packages needed to fetch snapd and create the venv."""
+        missing = [
+            package for package in self.APT_PACKAGES
+            if self._run(["dpkg-query", "-W", "-f=${Status}", package], check=False).stdout.strip()
+            != "install ok installed"
+        ]
+        if not missing:
+            return
+        env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+        self._run(["apt-get", "update"], check=True, env=env)
+        self._run(["apt-get", "install", "-y", "--no-install-recommends", *missing], check=True, env=env)
+
+    def _ensure_venv(self) -> None:
+        """Create the venv query_features.py runs in, with a recent enough pymongo."""
+        if not self.venv_python.exists():
+            self._run(["python3", "-m", "venv", str(self.VENV_DIR)], check=True)
+        version_check = (
+            "import sys, pymongo; "
+            f"sys.exit(0 if pymongo.version_tuple[:2] >= {self.PYMONGO_MIN_VERSION} else 1)"
+        )
+        if self._run([str(self.venv_python), "-c", version_check], check=False).returncode == 0:
+            return
+        self._run(
+            [
+                str(self.venv_python),
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-input",
+                "--upgrade",
+                *self.VENV_PACKAGES,
+            ],
+            check=True,
+        )
+
+    def _snapd_source(self) -> tuple[str, str] | None:
+        """The repository url and ref to fetch the features folder from, or None to use query-features-path."""
+        if str(self.config.get("query-features-path") or "").strip():
+            return None
+        url = str(self.config.get("snapd-repo-url") or "").strip()
+        ref = str(self.config.get("snapd-ref") or "").strip()
+        if not url or not ref:
+            raise RuntimeError("snapd-repo-url and snapd-ref must be set, or query-features-path")
+        return url, ref
+
+    def _fetch_snapd_features(self) -> None:
+        """
+        Check out tests/utils/features (query_features.py and its modules) from
+        snapd-repo-url at snapd-ref, so it is there before the first refresh;
+        every refresh updates it again. Skipped when query-features-path is set.
+        """
+        source = self._snapd_source()
+        if source is None:
+            return
+        fetch_snapd_features(self.SNAPD_DIR, *source, run=lambda cmd: self._run(cmd, check=True))
+
+    def _write_service_config(self) -> bool:
+        config = {
+            "spread_tests_execution_path": str(self.spread_tests_execution_path),
+            "added_spread_tests_path": str(self.added_spread_tests_path),
+            "base_tests_path": str(self.base_tests_path),
+            "credentials_path": str(self.MONGODB_CREDENTIALS_PATH),
+            "query_features_path": str(self._query_features_path()),
+            "refresh_command": self._refresh_command(),
+            "refresh_timeout_seconds": self.refresh_timeout_seconds,
+        }
+        config_json = json.dumps(config, indent=2, sort_keys=True)
+        service_state = self._service_state_marker_value(config)
+        previous_state = self.SERVICE_STATE_MARKER_PATH.read_text(encoding="utf-8").strip() if self.SERVICE_STATE_MARKER_PATH.exists() else ""
+
+        if self.SERVICE_CONFIG_PATH.exists() and previous_state == service_state:
+            return False
+
+        self.SERVICE_CONFIG_PATH.write_text(config_json, encoding="utf-8")
+        self.SERVICE_STATE_MARKER_PATH.write_text(service_state, encoding="utf-8")
+        return True
+
+    @staticmethod
+    def _write_private_file(path: Path, content: str) -> None:
+        """Write a file only root can read, created with that mode and replaced atomically."""
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.replace(tmp, path)
+
+
+
     def _install_packages(self) -> None:
         """Install the apt packages needed to fetch snapd and create the venv."""
         missing = [
@@ -334,8 +446,8 @@ class TestExecutionListerCharm(CharmBase):
 
     def _service_state_marker_value(self, config: dict[str, object]) -> str:
         relevant_state = {
-            "listen-host": str(self.config.get("listen-host") or "127.0.0.1"),
-            "listen-port": int(self.config.get("listen-port") or 8181),
+            "listen-host": self.listen_host,
+            "listen-port": self.listen_port,
             "mongodb-secret-id": str(self.config.get("mongodb-secret-id") or "").strip(),
             "query-features-path": str(self._query_features_path()),
             "execution-data-dir": str(self.execution_data_dir),
@@ -359,7 +471,7 @@ class TestExecutionListerCharm(CharmBase):
         configured = str(self.config.get("refresh-helper-command") or "").strip()
         if configured:
             return shlex.split(configured)
-        return [
+        command = [
             str(self.venv_python),
             str(self.refresh_helper_script),
             "--query-features-path",
@@ -370,7 +482,13 @@ class TestExecutionListerCharm(CharmBase):
             str(self.execution_data_dir),
             "--base-tests-max-minutes",
             str(int(self.config.get("base-tests-max-minutes", 0))),
+            "--jobs",
+            str(int(self.config.get("refresh-jobs", 2))),
         ]
+        source = self._snapd_source()
+        if source is not None:
+            command += ["--snapd-dir", str(self.SNAPD_DIR), "--snapd-repo-url", source[0], "--snapd-ref", source[1]]
+        return command
 
     def _write_mongodb_credentials_file(self) -> None:
         secret_id = str(self.config.get("mongodb-secret-id") or "").strip()
@@ -384,8 +502,7 @@ class TestExecutionListerCharm(CharmBase):
             raise RuntimeError(f"could not access mongodb secret {secret_id}: {exc}") from exc
 
         credentials = self._extract_credentials_json(content)
-        self.MONGODB_CREDENTIALS_PATH.write_text(json.dumps(credentials, indent=2), encoding="utf-8")
-        os.chmod(self.MONGODB_CREDENTIALS_PATH, 0o600)
+        self._write_private_file(self.MONGODB_CREDENTIALS_PATH, json.dumps(credentials, indent=2))
 
     @staticmethod
     def _extract_credentials_json(secret_content: dict[str, str]) -> dict:
@@ -429,8 +546,8 @@ class TestExecutionListerCharm(CharmBase):
             raise RuntimeError(f"mongodb credentials are missing keys: {', '.join(missing)}")
 
     def _render_systemd_unit(self) -> str:
-        host = str(self.config.get("listen-host") or "127.0.0.1")
-        port = int(self.config.get("listen-port") or 8181)
+        host = self.listen_host
+        port = self.listen_port
         return f"""[Unit]
 Description=test-execution-lister api service
 After=network.target
@@ -461,7 +578,7 @@ WantedBy=multi-user.target
         self._run(["systemctl", "restart", self.SERVICE_NAME], check=True)
 
     def _sync_open_port(self) -> None:
-        port = int(self.config.get("listen-port") or 8181)
+        port = self.listen_port
         self.unit.open_port("tcp", port)
         for opened in self.unit.opened_ports():
             if opened.protocol == "tcp" and opened.port != port:
@@ -480,9 +597,11 @@ WantedBy=multi-user.target
         return items
 
     def _call_service(self, endpoint: str, payload: dict, timeout: int = 30) -> dict:
-        host = str(self.config.get("listen-host") or "127.0.0.1")
-        port = int(self.config.get("listen-port") or 8181)
-        url = f"http://{host}:{port}{endpoint}"
+        host = self.listen_host
+        if host == "0.0.0.0":
+            # listening on all interfaces; reach it locally through loopback
+            host = "127.0.0.1"
+        url = f"http://{host}:{self.listen_port}{endpoint}"
         req = urllib_request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),

@@ -141,7 +141,16 @@ class TestReconcile(CharmTestCase):
 
         config = json.loads(charm.SERVICE_CONFIG_PATH.read_text())
         self.assertEqual(config["query_features_path"], str(charm.SNAPD_DIR / "tests/utils/features/query_features.py"))
-        self.assertEqual(config["refresh_command"][0], str(charm.VENV_DIR / "bin" / "python3"))
+        command = config["refresh_command"]
+        self.assertEqual(command[0], str(charm.VENV_DIR / "bin" / "python3"))
+        # every refresh, however it is triggered, updates the features checkout first
+        self.assertEqual(
+            command[command.index("--snapd-dir"):],
+            ["--snapd-dir", str(charm.SNAPD_DIR), "--snapd-repo-url", "https://github.com/canonical/snapd.git", "--snapd-ref", "master"],
+        )
+        # listens on all interfaces so CI can reach it
+        unit = (charm.SYSTEMD_DIR / f"{charm.SERVICE_NAME}.service").read_text()
+        self.assertIn("--host 0.0.0.0 --port 8181", unit)
         self.assertEqual(json.loads(charm.MONGODB_CREDENTIALS_PATH.read_text()), CREDENTIALS)
         self.assertTrue(self.system.ran("systemctl", "restart"))
 
@@ -171,6 +180,7 @@ class TestReconcile(CharmTestCase):
         self.assertFalse(self.system.ran("git"))
         config = json.loads(self.harness.charm.SERVICE_CONFIG_PATH.read_text())
         self.assertEqual(config["query_features_path"], "/srv/snapd/tests/utils/features/query_features.py")
+        self.assertNotIn("--snapd-dir", config["refresh_command"])
 
     def test_failed_command_waits_instead_of_failing(self):
         self.configure_secret()
@@ -191,6 +201,47 @@ class TestReconcile(CharmTestCase):
         self.assertTrue(self.system.ran("systemctl", "restart"))
 
 
+class TestFilesAndService(CharmTestCase):
+    def test_credentials_file_is_private(self):
+        self.configure_secret()
+        self.harness.begin()
+        self.harness.charm.on.install.emit()
+        path = self.harness.charm.MONGODB_CREDENTIALS_PATH
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(path.read_text()), CREDENTIALS)
+
+    def test_call_service_uses_loopback_for_wildcard_host(self):
+        self.harness.update_config({"listen-host": "0.0.0.0", "listen-port": 9000})
+        self.harness.begin()
+        sent = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'{"result": "ok"}'
+
+        def urlopen(req, timeout):
+            sent.append((req.full_url, timeout))
+            return Response()
+
+        with patch("charm.urllib_request.urlopen", urlopen):
+            self.harness.charm._call_service("/mongodb-updated", {}, timeout=99)
+        self.assertEqual(sent, [("http://127.0.0.1:9000/mongodb-updated", 99)])
+
+    def test_refresh_jobs_in_refresh_command(self):
+        self.configure_secret()
+        self.harness.update_config({"refresh-jobs": 4})
+        self.harness.begin()
+        self.harness.charm.on.install.emit()
+        command = json.loads(self.harness.charm.SERVICE_CONFIG_PATH.read_text())["refresh_command"]
+        self.assertEqual(command[command.index("--jobs") + 1], "4")
+
+
 class TestActions(CharmTestCase):
     def setUp(self):
         super().setUp()
@@ -198,25 +249,21 @@ class TestActions(CharmTestCase):
         self.harness.begin()
         self.harness.charm.on.install.emit()
 
-    def test_mongodb_updated_fetches_first_and_waits_for_the_refresh(self):
+    def test_mongodb_updated_waits_for_the_refresh(self):
         self.harness.update_config({"refresh-timeout-seconds": 600})
         self.system.commands.clear()
         with patch.object(TestExecutionListerCharm, "_call_service", return_value={"result": "ok"}) as call:
             output = self.harness.run_action("mongodb-updated")
         self.assertEqual(output.results, {"result": "ok"})
-        self.assertTrue(self.system.ran("git", "-C"))
         call.assert_called_once_with(endpoint="/mongodb-updated", payload={}, timeout=660)
+        # the service's refresh command updates the features checkout, not the action
+        self.assertFalse(self.system.ran("git"))
 
     def test_mongodb_updated_reports_failures(self):
         with patch.object(TestExecutionListerCharm, "_call_service", side_effect=RuntimeError("service request failed: timed out")):
             with self.assertRaises(ops.testing.ActionFailed) as failed:
                 self.harness.run_action("mongodb-updated")
         self.assertIn("timed out", failed.exception.message)
-
-        self.system.fail_on = "fetch"
-        with self.assertRaises(ops.testing.ActionFailed) as failed:
-            self.harness.run_action("mongodb-updated")
-        self.assertIn("command failed: git", failed.exception.message)
 
     def test_calculate_tests_reports_service_errors(self):
         params = {"changed-files-json": "{}", "tests": "tests/main/a", "backend-systems": "s1"}

@@ -16,7 +16,7 @@ The service listens on `listen-host:listen-port` and can handle multiple request
 
 Available config options are defined in [charmcraft.yaml](charmcraft.yaml):
 
-- `listen-host`: host for the local API service, default `127.0.0.1`
+- `listen-host`: address the API service listens on, default `0.0.0.0` (all interfaces, so CI can reach it)
 - `listen-port`: port for the local API service, default `8181`
 - `mongodb-secret-id`: Juju secret ID containing the MongoDB credentials JSON
 - `snapd-repo-url`: git repository to fetch `tests/utils/features` (`query_features.py`) from, default `https://github.com/canonical/snapd.git`
@@ -27,12 +27,27 @@ Available config options are defined in [charmcraft.yaml](charmcraft.yaml):
 - `refresh-helper-command`: optional override for the helper command that rebuilds `spread-execution-map.json` and `base-executions.json`
 - `base-tests-max-minutes`: maximum execution time, in minutes, for the base test coverage set
 - `refresh-timeout-seconds`: timeout used when refreshing from MongoDB
+- `refresh-jobs`: number of systems queried in parallel during a refresh, default `2`; each query can use several hundred MB of memory
 
-The unit does not need a snapd checkout: the charm keeps a shallow, sparse checkout of only `tests/utils/features` from `snapd-repo-url` at `snapd-ref` in `/var/lib/test-execution-lister/snapd`, updated on install, upgrade and config changes, and before every `mongodb-updated`. The `query_features.py` there must match how the data was uploaded; for example, coverage stored in its own collection needs a `query_features.py` that reads it.
+The unit does not need a snapd checkout: the charm keeps a shallow, sparse checkout of only `tests/utils/features` from `snapd-repo-url` at `snapd-ref` in `/var/lib/test-execution-lister/snapd`, created on install and updated on upgrade and config changes and by every refresh, whether triggered through the HTTP API or the `mongodb-updated` action. The `query_features.py` there must match how the data was uploaded; for example, coverage stored in its own collection needs a `query_features.py` that reads it.
 
 The charm installs `git` and `python3-venv` with apt when missing, and creates a virtualenv in `/var/lib/test-execution-lister/venv` with `pymongo` (4.9 or newer, from PyPI), in which the refresh helper and `query_features.py` run. The dashboard packages in the features folder's `requirements.txt` are not installed.
 
 Failures while installing or configuring leave the unit blocked or waiting with the reason; run the `reconcile` action (or change the config) to retry. Upgrading the charm always restarts the API service.
+
+## HTTP API
+
+CI on the same cloud calls the service directly at `http://<unit-address>:<listen-port>` (port `8181` by default). The charm opens the port; depending on the cloud, `juju expose test-execution-lister` (optionally with `--to-cidrs` limited to the CI network) is needed to allow traffic to it. The API has no authentication, so only expose it to networks you trust.
+
+- `GET /health`: returns `{"status": "ok"}`
+- `POST /calculate-tests` with `{"changed_files": {"modified": [...], "added": [...], "deleted": [...]}, "backend_systems": [...], "tests": [...]}`: returns `{"tests": [...], "count": N}`, the subset of `tests` to run
+- `POST /add-tests` with `{"tests": [...]}`: appends to `added-spread-tests.txt`
+- `POST /mongodb-updated`: updates the features checkout and rebuilds the execution data from MongoDB; it answers when the refresh is done (about 30 seconds with 18 systems), so give the request a timeout of at least `refresh-timeout-seconds`
+
+```bash
+curl -X POST --max-time 360 http://<unit-address>:8181/mongodb-updated
+curl -X POST -d @request.json http://<unit-address>:8181/calculate-tests
+```
 
 ## Juju secret format
 
@@ -123,6 +138,8 @@ tools/check_recent_commits.py --snapd ~/source/snapd --data-dir /tmp/tel \
 - `calculate-tests` requires an allowed tests list (`tests`) and uses the same selection logic as `src/calculate_tests.py`.
 - Tests that failed in the coverage run are left out of `spread-execution-map.json`, so, like any allowed test missing from the map, they are always selected until a run where they pass replaces the data.
 - The API service keeps the parsed `spread-execution-map.json`, `interface-users.json` and `base-executions.json` in memory and reloads a file only when it changes (its modification time or size), so requests do not re-read the large map; the refresh helper replaces the files atomically.
+- The MongoDB credentials file is only readable by root.
+- A refresh uses the latest timestamp for all three files, so they always come from the same upload, queries each system once for both coverage and interfaces (`refresh-jobs` at a time), and replaces the files only after all queries succeeded.
 - Base tests are recalculated on MongoDB refresh using `query_features.py feat cover` with `--max-minutes` taken from charm config. When `base-tests-max-minutes` is above 0, `--force-match-keywords refresh` is also passed, so features mentioning refresh are always covered by the base tests even if that exceeds the time limit.
 - Tests listed in `added-spread-tests.txt` are always selected, but only for backend:systems whose `tests` input contains them; an entry without a variant selects all of its variants. The result of `calculate-tests` is always a subset of the `tests` input.
 - `mongodb-updated` first updates the `tests/utils/features` checkout, then runs the helper command, which in turn uses `query_features.py` to query MongoDB. The action waits for up to `refresh-timeout-seconds` plus a minute.
