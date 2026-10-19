@@ -172,6 +172,15 @@ class TestReconcile(CharmTestCase):
         self.assertIn(["git", "-C", repo, "remote", "set-url", "origin", "https://github.com/me/snapd.git"], self.system.commands)
         self.assertIn(["git", "-C", repo, "fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", "my-branch"], self.system.commands)
 
+    def test_fetch_uses_the_refresh_helper_function(self):
+        # the charm and every refresh share one implementation of the fetch
+        self.configure_secret()
+        self.harness.begin()
+        with patch("charm.fetch_snapd_features") as fetch:
+            self.harness.charm.on.install.emit()
+        fetch.assert_called_once()
+        self.assertEqual(fetch.call_args.args[:3], (self.harness.charm.SNAPD_DIR, "https://github.com/canonical/snapd.git", "master"))
+
     def test_query_features_path_skips_fetch(self):
         self.configure_secret()
         self.harness.update_config({"query-features-path": "/srv/snapd/tests/utils/features/query_features.py"})
