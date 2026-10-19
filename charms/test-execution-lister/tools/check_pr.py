@@ -13,9 +13,10 @@ service which of them to run:
 2. the job's tests: .github/scripts/spread_tests_to_run.py with the job's
    backend, systems, tasks and rules, expanded with `spread -list` in a
    temporary worktree of the pull request's head ("CI" column)
-3. tests/utils/features/shared_test_users.py --rewrite on the changed files,
-   then POST /calculate-tests once per system with that system's tests
-   ("service" column)
+3. tests/utils/features/shared_test_users.py --rewrite on the changed files
+   (with --base set to the pull request's base, so changed tools are narrowed
+   to the subcommands the change affects), then POST /calculate-tests once per
+   system with that system's tests ("service" column)
 
 Both scripts are taken from the pull request's checkout, or from the --snapd
 checkout when the pull request does not have them yet. The skip list from
@@ -136,7 +137,8 @@ def main() -> None:
     args = parser.parse_args()
     systems_files = args.systems_file or [DEFAULT_SYSTEMS_FILE]
 
-    pr_info = json.loads(run(["gh", "pr", "view", str(args.pr), "--repo", args.repo, "--json", "title,url,labels"]))
+    pr_info = json.loads(run(["gh", "pr", "view", str(args.pr), "--repo", args.repo,
+                              "--json", "title,url,labels,baseRefOid"]))
     labels = {label["name"] for label in pr_info["labels"]}
     ci_files, service_files = pr_files(args.repo, args.pr)
     print(f"PR #{args.pr}: {pr_info['title']}\n{pr_info['url']}")
@@ -145,6 +147,8 @@ def main() -> None:
     if labels & {"Skip spread", "Run all"}:
         print(f"note: labels {sorted(labels & {'Skip spread', 'Run all'})} change what CI runs and are not mimicked")
 
+    base = pr_info["baseRefOid"]
+    run(["git", "-C", str(args.snapd), "fetch", "-q", f"https://github.com/{args.repo}.git", base])
     run(["git", "-C", str(args.snapd), "fetch", "-q", f"https://github.com/{args.repo}.git", f"pull/{args.pr}/head"])
     head = run(["git", "-C", str(args.snapd), "rev-parse", "FETCH_HEAD"]).strip()
     with tempfile.TemporaryDirectory() as tmp:
@@ -159,9 +163,14 @@ def main() -> None:
             sent = service_files
             shared_users = None if args.no_shared_users else script(worktree, args.snapd, SHARED_USERS_SCRIPT)
             if shared_users is not None:
-                sent = json.loads(run([sys.executable, str(shared_users), "--repo", str(worktree),
-                                       "--changed-files", "-", "--rewrite"], stdin=json.dumps(service_files)))
-                print(f"changed files rewritten with {shared_users}")
+                cmd = [sys.executable, str(shared_users), "--repo", str(worktree), "--changed-files", "-", "--rewrite"]
+                # older copies cannot narrow changed tools to subcommands with --base
+                narrows = "subcommand" in run([sys.executable, str(shared_users), "--help"])
+                if narrows:
+                    cmd += ["--base", base]
+                sent = json.loads(run(cmd, stdin=json.dumps(service_files)))
+                print(f"changed files rewritten with {shared_users}"
+                      + ("" if narrows else " (without narrowing tools to subcommands)"))
             elif not args.no_shared_users:
                 print(f"{SHARED_USERS_SCRIPT} not found; shared test files make the service run everything")
 
@@ -191,7 +200,7 @@ def main() -> None:
     print(f"{'total':63} {ci_total:>6} {service_total:>8}{share}")
 
     if args.json:
-        args.json.write_text(json.dumps({"pr": args.pr, "head": head, "ci_changed_files": ci_files,
+        args.json.write_text(json.dumps({"pr": args.pr, "base": base, "head": head, "ci_changed_files": ci_files,
                                          "changed_files": service_files, "sent_changed_files": sent,
                                          "results": results}, indent=1), encoding="utf-8")
 
