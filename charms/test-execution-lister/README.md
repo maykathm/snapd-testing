@@ -49,6 +49,49 @@ curl -X POST --max-time 360 http://<unit-address>:8181/mongodb-updated
 curl -X POST -d @request.json http://<unit-address>:8181/calculate-tests
 ```
 
+## How tests are selected
+
+`POST /calculate-tests` applies these rules separately for each `backend:system`. The logic is in `src/service_api.py` and `src/calculate_tests.py`.
+
+**The result is always a subset of the `tests` input.** A test that is not in the input is never returned.
+
+### 1. Ignored files
+
+Changes under `docs/` (the API documentation site) and `.github/` (CI configuration) are dropped. They select nothing and never make everything run.
+
+### 2. Run everything
+
+Every input test runs if any of these is true for any changed file (modified, added or deleted):
+
+1. **There is no execution data**: `spread-execution-map.json` or `base-executions.json` is missing, e.g. before the first refresh.
+2. **A non-Go file without a rule of its own changed**: non-Go files have no coverage data, e.g. C code such as snap-confine, `spread.yaml`, `go.mod`, packaging or `data/`.
+3. **A file under `tests/` that is not inside a test folder changed**: e.g. shared helpers in `tests/lib/`, tooling, or a file directly in a suite folder.
+4. **A modified Go file has no tests in the coverage map** (see 3C).
+
+These non-Go files do not trigger rule 2:
+
+- documentation (`.md`, `.rst`)
+- C unit tests (`*-test.c`, `*-test.h`)
+- files in unit test folders (`testdata`, `testutil`, `testtime`, or any folder ending in `test`)
+- files under `tests/` (rule 3 and 3B handle them)
+
+### 3. Otherwise, these tests are selected
+
+- **A. Base tests**: the system's tests in `base-executions.json`, always. They are chosen on refresh to cover as many features as fit in `base-tests-max-minutes`; features mentioning refresh are always covered.
+- **B. Changed tests**: a changed file inside a test folder, `tests/<suite>/<test>/...` for the suites in `SPREAD_SUITES` in `src/service_api.py` (e.g. `tests/main/foo/task.yaml`), selects that test with all its variants. A test that is not in the input (e.g. a deleted test) selects nothing.
+- **C. Modified Go files**: the tests that cover that exact file in `spread-execution-map.json`. No tests means everything runs, except for `interfaces/builtin/<name>.go`: there, the tests that connected the interface (`interface-users.json`) are added too, and the file never makes everything run, since many interface files have no coverage of their own. Without `interface-users.json` (or an entry for the system), the normal rule applies.
+- **D. Added or deleted Go files**: the tests that cover any file in the same folder or its subfolders. These never make everything run.
+- **E. Tests missing from the coverage map**: any input test the map does not know, e.g. a new test, or one that failed in the coverage run (failed tests are left out of the map until a run where they pass).
+- **F. Manually added tests**: the tests in `added-spread-tests.txt`. An entry without a variant selects all its variants.
+
+### Go files that do not count
+
+Go unit test files (`_test.go`) and Go files in unit test helper packages (`testutil`, `testtime`, `testdata`, or folders ending in `test`) never appear in spread coverage, so they are skipped in 3C and 3D. The exception is `asserts/assertstest`, which spread tests use through the fake store; it counts like any other Go file.
+
+### In short
+
+Start with the base tests, then add the tests that cover the changed Go files, the tests whose folders changed, the tests the coverage map does not know, and the manually added tests. If anything changed that there is no data for, run everything.
+
 ## Juju secret format
 
 The charm expects `mongodb-secret-id` to point to a Juju secret whose content contains either:
@@ -146,18 +189,10 @@ Both snapd scripts come from the pull request's checkout, or from the `--snapd` 
 
 ## Notes
 
-- A changed file inside a test folder, `tests/<suite>/<test>/...` for the spread suites listed in `SPREAD_SUITES` in `src/service_api.py` (e.g. `tests/main/foo/task.yaml` or `tests/nested/manual/bar/script.sh`), selects that test, including all its variants, for the backend:systems whose `tests` input contains it. A changed test that is not in the input (e.g. a deleted test) selects nothing.
-- Any other changed file under `tests/` (shared helpers such as `tests/lib/`, tooling, or files directly in a suite folder) returns every allowed test.
-- For a modified `interfaces/builtin/<name>.go`, the tests that connected that interface in the feature data (`interface-users.json`, written on refresh next to the map) are selected in addition to the file's coverage. Many interface files have no coverage of their own, since their code runs in shared files, so with this data such a file never makes `calculate-tests` return everything: an interface no test connects selects nothing extra. Without `interface-users.json` (or without an entry for the system), the previous behaviour applies.
-- Changes under `docs/` (the API documentation site) and `.github/` (CI configuration) are ignored entirely: they select no tests and never make `calculate-tests` return everything.
-- Changed files that are not Go have no coverage data, so any change to one (C code such as snap-confine, packaging, `data/`, `spread.yaml`, `go.mod`, CI configuration, ...) returns every allowed test, except for files with a rule of their own: spread tests and their helpers under `tests/` (see above), documentation (`.md`, `.rst`), C unit tests (`*-test.c`, `*-test.h`) and files in unit test folders (`testdata`, folders ending in `test`, `testutil`, `testtime`).
-- Only Go source files are used when resolving changed-file lookups; Go unit test files (`_test.go`) and unit test helper packages (folders ending in `test`, plus `testutil`, `testtime` and `testdata`, but not `asserts/assertstest`, which the fake store uses) are ignored because they never appear in spread coverage.
 - `calculate-tests` requires structured JSON (`changed-files-json`) with `modified`, `added`, and `deleted` keys.
 - `calculate-tests` requires an allowed tests list (`tests`) and uses the same selection logic as `src/calculate_tests.py`.
-- Tests that failed in the coverage run are left out of `spread-execution-map.json`, so, like any allowed test missing from the map, they are always selected until a run where they pass replaces the data.
 - The API service keeps the parsed `spread-execution-map.json`, `interface-users.json` and `base-executions.json` in memory and reloads a file only when it changes (its modification time or size), so requests do not re-read the large map; the refresh helper replaces the files atomically.
 - The MongoDB credentials file is only readable by root.
 - A refresh uses the latest timestamp for all three files, so they always come from the same upload, queries each system once for both coverage and interfaces (`refresh-jobs` at a time), and replaces the files only after all queries succeeded.
 - Base tests are recalculated on MongoDB refresh using `query_features.py feat cover` with `--max-minutes` taken from charm config. When `base-tests-max-minutes` is above 0, `--force-match-keywords refresh` is also passed, so features mentioning refresh are always covered by the base tests even if that exceeds the time limit.
-- Tests listed in `added-spread-tests.txt` are always selected, but only for backend:systems whose `tests` input contains them; an entry without a variant selects all of its variants. The result of `calculate-tests` is always a subset of the `tests` input.
 - `mongodb-updated` first updates the `tests/utils/features` checkout, then runs the helper command, which in turn uses `query_features.py` to query MongoDB. The action waits for up to `refresh-timeout-seconds` plus a minute.
