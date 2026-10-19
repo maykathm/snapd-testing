@@ -132,13 +132,17 @@ tools/check_recent_commits.py --snapd ~/source/snapd --data-dir /tmp/tel \
 
 ## Checking a pull request against a running service
 
-`tools/check_pr.py` reports, for one snapd pull request, how many tests the service would run on each system in the pull request's `.github/workflows/data-fundamental-systems.json`. It reads the changed files from GitHub with the `gh` CLI, checks out the pull request in a temporary worktree of a local snapd checkout to list each system's tests with `spread -list`, and calls `POST /calculate-tests` once per system:
+`tools/check_pr.py` mimics snapd's CI test selection for one pull request, with and without the service. For each job in the pull request's `.github/workflows/data-fundamental-systems.json` (or the matrices given with `--systems-file`), it:
+
+1. reads the changed files from GitHub with the `gh` CLI, as CI sees them
+2. runs snapd's `.github/scripts/spread_tests_to_run.py` (the "Setup run tests variable" step of `spread-tests.yaml`) with the job's backend, systems, tasks and rules, and expands the result with `spread -list` in a temporary worktree of the pull request: the tests CI runs today
+3. rewrites the changed files with `tests/utils/features/shared_test_users.py --rewrite` and calls `POST /calculate-tests` once per system with that system's tests: the tests CI would run with the service
 
 ```bash
 tools/check_pr.py 17856 --snapd ~/source/snapd --service http://<unit-address>:8181
 ```
 
-Shared test files are rewritten with `tests/utils/features/shared_test_users.py` from the pull request, as CI would; `--shared-users <path>` uses another copy and `--no-shared-users` skips it. `--show-tests` prints the selected tests and `--json` writes all results.
+Both snapd scripts come from the pull request's checkout, or from the `--snapd` checkout when the pull request does not have them yet. The skip list from `canonical/snapd-testing-skip`, which CI applies afterwards, and the `Skip spread` and `Run all` labels are not mimicked. `--no-shared-users` sends the changed files as they are, `--show-tests` prints the selected tests and `--json` writes all results.
 
 ## Notes
 
