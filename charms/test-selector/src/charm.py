@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 class TestExecutionListerCharm(CharmBase):
     """Machine charm that exposes API for test selection and map refresh."""
 
-    SERVICE_NAME = "test-execution-lister-api"
+    SERVICE_NAME = "test-selector-api"
     SYSTEMD_DIR = Path("/etc/systemd/system")
-    STATE_DIR = Path("/var/lib/test-execution-lister")
+    STATE_DIR = Path("/var/lib/test-selector")
     SERVICE_CONFIG_PATH = STATE_DIR / "service-config.json"
     MONGODB_CREDENTIALS_PATH = STATE_DIR / "mongodb-credentials.json"
     SERVICE_STATE_MARKER_PATH = STATE_DIR / "service-state.marker"
@@ -108,10 +108,10 @@ class TestExecutionListerCharm(CharmBase):
         return int(self.config.get("listen-port") or 8181)
 
     def _on_install(self, _event):
-        self._reconcile_in_hook("installing test-execution-lister")
+        self._reconcile_in_hook("installing test-selector")
 
     def _on_start(self, _event):
-        self._reconcile_in_hook("starting test-execution-lister")
+        self._reconcile_in_hook("starting test-selector")
 
     def _on_config_changed(self, _event):
         self._reconcile_in_hook("applying updated configuration")
@@ -452,7 +452,7 @@ class TestExecutionListerCharm(CharmBase):
         host = self.listen_host
         port = self.listen_port
         return f"""[Unit]
-Description=test-execution-lister api service
+Description=test-selector api service
 After=network.target
 
 [Service]
