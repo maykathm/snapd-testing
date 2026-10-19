@@ -14,22 +14,25 @@ The service listens on `listen-host:listen-port` and can handle multiple request
 
 ## Configuration
 
-Available config options are defined in [config.yaml](config.yaml):
+Available config options are defined in [charmcraft.yaml](charmcraft.yaml):
 
 - `listen-host`: host for the local API service, default `127.0.0.1`
 - `listen-port`: port for the local API service, default `8181`
 - `mongodb-secret-id`: Juju secret ID containing the MongoDB credentials JSON
-- `query-features-path`: absolute path to `query_features.py` on the unit
-- `query-features-requirements-path`: optional override for the `requirements.txt` used by `query_features.py`; by default the charm uses the sibling file next to `query_features.py`
-- `execution-data-dir`: directory containing `spread-execution-map.json` and `base-executions.json`
+- `snapd-repo-url`: git repository to fetch `tests/utils/features` (`query_features.py`) from, default `https://github.com/canonical/snapd.git`
+- `snapd-ref`: branch, tag or full commit SHA of `snapd-repo-url` to fetch it from, default `master`
+- `query-features-path`: optional path to an existing `query_features.py` on the unit; when set, nothing is fetched
+- `execution-data-dir`: directory containing `spread-execution-map.json`, `interface-users.json` and `base-executions.json`
 - `added-spread-tests-path`: path to the added tests text file
 - `refresh-helper-command`: optional override for the helper command that rebuilds `spread-execution-map.json` and `base-executions.json`
 - `base-tests-max-minutes`: maximum execution time, in minutes, for the base test coverage set
 - `refresh-timeout-seconds`: timeout used when refreshing from MongoDB
 
-The default `query-features-path` assumes the snapd repository is available on the machine at `/home/ubuntu/source/snapd/tests/utils/features/query_features.py`. Update that value if your path is different.
+The unit does not need a snapd checkout: the charm keeps a shallow, sparse checkout of only `tests/utils/features` from `snapd-repo-url` at `snapd-ref` in `/var/lib/test-execution-lister/snapd`, updated on install, upgrade and config changes, and before every `mongodb-updated`. The `query_features.py` there must match how the data was uploaded; for example, coverage stored in its own collection needs a `query_features.py` that reads it.
 
-The charm installs the dependencies listed in the corresponding `requirements.txt` before starting the API service or running the refresh helper.
+The charm installs `git` and `python3-venv` with apt when missing, and creates a virtualenv in `/var/lib/test-execution-lister/venv` with `pymongo` (4.9 or newer, from PyPI), in which the refresh helper and `query_features.py` run. The dashboard packages in the features folder's `requirements.txt` are not installed.
+
+Failures while installing or configuring leave the unit blocked or waiting with the reason; run the `reconcile` action (or change the config) to retry. Upgrading the charm always restarts the API service.
 
 ## Juju secret format
 
@@ -63,7 +66,7 @@ juju config test-execution-lister mongodb-secret-id=<secret-id>
 
 ## Actions
 
-Actions are defined in [actions.yaml](actions.yaml):
+Actions are defined in [charmcraft.yaml](charmcraft.yaml):
 
 - `calculate-tests`: accepts `backend-systems`, `changed-files-json`, and `tests`, then returns the tests that should be executed
 - `add-tests`: appends tests to `added-spread-tests.txt`
@@ -122,4 +125,4 @@ tools/check_recent_commits.py --snapd ~/source/snapd --data-dir /tmp/tel \
 - The API service keeps the parsed `spread-execution-map.json`, `interface-users.json` and `base-executions.json` in memory and reloads a file only when it changes (its modification time or size), so requests do not re-read the large map; the refresh helper replaces the files atomically.
 - Base tests are recalculated on MongoDB refresh using `query_features.py feat cover` with `--max-minutes` taken from charm config. When `base-tests-max-minutes` is above 0, `--force-match-keywords refresh` is also passed, so features mentioning refresh are always covered by the base tests even if that exceeds the time limit.
 - Tests listed in `added-spread-tests.txt` are always selected, but only for backend:systems whose `tests` input contains them; an entry without a variant selects all of its variants. The result of `calculate-tests` is always a subset of the `tests` input.
-- `mongodb-updated` runs the helper command, which in turn uses `query_features.py` to query MongoDB.
+- `mongodb-updated` first updates the `tests/utils/features` checkout, then runs the helper command, which in turn uses `query_features.py` to query MongoDB. The action waits for up to `refresh-timeout-seconds` plus a minute.

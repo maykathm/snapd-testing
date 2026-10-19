@@ -27,8 +27,19 @@ class TestExecutionListerCharm(CharmBase):
     STATE_DIR = Path("/var/lib/test-execution-lister")
     SERVICE_CONFIG_PATH = STATE_DIR / "service-config.json"
     MONGODB_CREDENTIALS_PATH = STATE_DIR / "mongodb-credentials.json"
-    QUERY_FEATURES_MARKER_PATH = STATE_DIR / "query-features-requirements.marker"
     SERVICE_STATE_MARKER_PATH = STATE_DIR / "service-state.marker"
+    # sparse checkout of snapd with only the features folder
+    SNAPD_DIR = STATE_DIR / "snapd"
+    FEATURES_SUBDIR = "tests/utils/features"
+    # virtualenv the refresh helper and query_features.py run in
+    VENV_DIR = STATE_DIR / "venv"
+    APT_PACKAGES = ("git", "python3-venv")
+    # query_features.py only needs pymongo (requirements.txt there also lists
+    # the dashboard's packages); it uses Cursor.to_list(), added in pymongo 4.9
+    VENV_PACKAGES = ("pymongo>=4.9",)
+    PYMONGO_MIN_VERSION = (4, 9)
+    # extra time, beyond the refresh timeout, to wait for the service to answer
+    REFRESH_RESPONSE_MARGIN_SECONDS = 60
 
     def __init__(self, *args):
         super().__init__(*args)
@@ -79,26 +90,39 @@ class TestExecutionListerCharm(CharmBase):
         return self.execution_data_dir / "base-executions.json"
 
     @property
-    def query_features_requirements_path(self) -> Path:
-        configured = str(self.config.get("query-features-requirements-path") or "").strip()
-        if configured:
-            return Path(configured)
-        return self._query_features_path().with_name("requirements.txt")
+    def venv_python(self) -> Path:
+        return self.VENV_DIR / "bin" / "python3"
+
+    @property
+    def refresh_timeout_seconds(self) -> int:
+        return int(self.config.get("refresh-timeout-seconds", 300))
 
     def _on_install(self, _event):
-        self._reconcile("installing test-execution-lister")
+        self._reconcile_in_hook("installing test-execution-lister")
 
     def _on_start(self, _event):
-        self._reconcile("starting test-execution-lister")
+        self._reconcile_in_hook("starting test-execution-lister")
 
     def _on_config_changed(self, _event):
-        self._reconcile("applying updated configuration")
+        self._reconcile_in_hook("applying updated configuration")
 
     def _on_upgrade_charm(self, _event):
-        self._reconcile("upgrading charm configuration")
+        # the service runs the charm's code, so restart it to pick up the new version
+        self._reconcile_in_hook("upgrading charm configuration", force_restart=True)
 
     def _on_secret_changed(self, _event: SecretChangedEvent):
-        self._reconcile("processing secret update")
+        self._reconcile_in_hook("processing secret update")
+
+    def _reconcile_in_hook(self, maintenance_msg: str, force_restart: bool = False) -> None:
+        """
+        Reconcile from a hook. Failures leave the unit blocked or waiting with
+        the reason (set by _reconcile) rather than failing the hook, which
+        would put the unit in error; the reconcile action retries.
+        """
+        try:
+            self._reconcile(maintenance_msg, force_restart=force_restart)
+        except RuntimeError as exc:
+            logger.warning("reconcile failed: %s", exc)
 
     def _on_reconcile_action(self, event: ActionEvent):
         try:
@@ -143,10 +167,14 @@ class TestExecutionListerCharm(CharmBase):
             event.fail("backend-systems must contain at least one backend:system")
             return
 
-        response = self._call_service(
-            endpoint="/calculate-tests",
-            payload={"changed_files": changed_files, "backend_systems": backend_systems, "tests": tests},
-        )
+        try:
+            response = self._call_service(
+                endpoint="/calculate-tests",
+                payload={"changed_files": changed_files, "backend_systems": backend_systems, "tests": tests},
+            )
+        except RuntimeError as exc:
+            event.fail(str(exc))
+            return
         event.set_results(
             {
                 "tests": "\n".join(response.get("tests", [])),
@@ -159,38 +187,60 @@ class TestExecutionListerCharm(CharmBase):
         if not tests:
             event.fail("tests must contain at least one test path")
             return
-        response = self._call_service(endpoint="/add-tests", payload={"tests": tests})
+        try:
+            response = self._call_service(endpoint="/add-tests", payload={"tests": tests})
+        except RuntimeError as exc:
+            event.fail(str(exc))
+            return
         event.set_results({"result": response.get("result", "ok"), "added": str(response.get("added", 0))})
 
     def _on_mongodb_updated_action(self, event: ActionEvent):
-        response = self._call_service(endpoint="/mongodb-updated", payload={})
+        try:
+            # refresh with the current query_features.py
+            self._fetch_snapd_features()
+            response = self._call_service(
+                endpoint="/mongodb-updated",
+                payload={},
+                timeout=self.refresh_timeout_seconds + self.REFRESH_RESPONSE_MARGIN_SECONDS,
+            )
+        except subprocess.CalledProcessError as exc:
+            event.fail(self._command_error(exc))
+            return
+        except (RuntimeError, OSError) as exc:
+            event.fail(str(exc))
+            return
         event.set_results({"result": response.get("result", "ok")})
 
-    def _reconcile(self, maintenance_msg: str):
+    def _reconcile(self, maintenance_msg: str, force_restart: bool = False):
+        """Bring the unit to the configured state; raises RuntimeError on failure."""
         self.unit.status = MaintenanceStatus(maintenance_msg)
         try:
             self._ensure_state_dirs()
-            self._install_query_features_dependencies()
+            self._install_packages()
+            self._ensure_venv()
+            self._fetch_snapd_features()
             self._write_mongodb_credentials_file()
             service_state_changed = self._write_service_config()
-            if service_state_changed:
+            if service_state_changed or force_restart:
                 self._configure_systemd_service()
             self._sync_open_port()
             self.unit.status = ActiveStatus("api ready")
-        except FileNotFoundError as exc:
+        except (OSError, RuntimeError) as exc:
             self.unit.status = BlockedStatus(str(exc))
-            raise
-        except RuntimeError as exc:
-            self.unit.status = BlockedStatus(str(exc))
-            raise
+            raise RuntimeError(str(exc)) from exc
         except subprocess.CalledProcessError as exc:
-            stderr = (exc.stderr or "").strip()
-            cmd = " ".join(exc.cmd) if isinstance(exc.cmd, list) else str(exc.cmd)
-            msg = f"command failed: {cmd}"
-            if stderr:
-                msg = f"{msg}: {stderr}"
+            msg = self._command_error(exc)
             self.unit.status = WaitingStatus(msg)
             raise RuntimeError(msg) from exc
+
+    @staticmethod
+    def _command_error(exc: subprocess.CalledProcessError) -> str:
+        stderr = (exc.stderr or "").strip()
+        cmd = " ".join(exc.cmd) if isinstance(exc.cmd, list) else str(exc.cmd)
+        msg = f"command failed: {cmd}"
+        if stderr:
+            msg = f"{msg}: {stderr}"
+        return msg
 
     def _ensure_state_dirs(self) -> None:
         self.STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -205,7 +255,7 @@ class TestExecutionListerCharm(CharmBase):
             "credentials_path": str(self.MONGODB_CREDENTIALS_PATH),
             "query_features_path": str(self._query_features_path()),
             "refresh_command": self._refresh_command(),
-            "refresh_timeout_seconds": int(self.config.get("refresh-timeout-seconds", 300)),
+            "refresh_timeout_seconds": self.refresh_timeout_seconds,
         }
         config_json = json.dumps(config, indent=2, sort_keys=True)
         service_state = self._service_state_marker_value(config)
@@ -218,36 +268,69 @@ class TestExecutionListerCharm(CharmBase):
         self.SERVICE_STATE_MARKER_PATH.write_text(service_state, encoding="utf-8")
         return True
 
-    def _install_query_features_dependencies(self) -> None:
-        requirements_path = self.query_features_requirements_path
-        if not requirements_path.exists():
-            raise FileNotFoundError(f"query_features requirements file not found: {requirements_path}")
+    def _install_packages(self) -> None:
+        """Install the apt packages needed to fetch snapd and create the venv."""
+        missing = [
+            package for package in self.APT_PACKAGES
+            if self._run(["dpkg-query", "-W", "-f=${Status}", package], check=False).stdout.strip()
+            != "install ok installed"
+        ]
+        if not missing:
+            return
+        env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+        self._run(["apt-get", "update"], check=True, env=env)
+        self._run(["apt-get", "install", "-y", "--no-install-recommends", *missing], check=True, env=env)
 
-        marker_value = self._requirements_marker_value(requirements_path)
-        if self.QUERY_FEATURES_MARKER_PATH.exists():
-            current_marker = self.QUERY_FEATURES_MARKER_PATH.read_text(encoding="utf-8").strip()
-            if current_marker == marker_value:
-                return
-
+    def _ensure_venv(self) -> None:
+        """Create the venv query_features.py runs in, with a recent enough pymongo."""
+        if not self.venv_python.exists():
+            self._run(["python3", "-m", "venv", str(self.VENV_DIR)], check=True)
+        version_check = (
+            "import sys, pymongo; "
+            f"sys.exit(0 if pymongo.version_tuple[:2] >= {self.PYMONGO_MIN_VERSION} else 1)"
+        )
+        if self._run([str(self.venv_python), "-c", version_check], check=False).returncode == 0:
+            return
         self._run(
             [
-                "python3",
+                str(self.venv_python),
                 "-m",
                 "pip",
                 "install",
                 "--disable-pip-version-check",
                 "--no-input",
-                "-r",
-                str(requirements_path),
+                "--upgrade",
+                *self.VENV_PACKAGES,
             ],
             check=True,
         )
-        self.QUERY_FEATURES_MARKER_PATH.write_text(marker_value, encoding="utf-8")
 
-    @staticmethod
-    def _requirements_marker_value(requirements_path: Path) -> str:
-        stat_result = requirements_path.stat()
-        return f"{requirements_path}:{stat_result.st_mtime_ns}:{stat_result.st_size}"
+    def _fetch_snapd_features(self) -> None:
+        """
+        Check out tests/utils/features (query_features.py and its modules) from
+        snapd-repo-url at snapd-ref into SNAPD_DIR, as a shallow sparse checkout.
+        Skipped when query-features-path points at an existing copy.
+        """
+        if str(self.config.get("query-features-path") or "").strip():
+            return
+        url = str(self.config.get("snapd-repo-url") or "").strip()
+        ref = str(self.config.get("snapd-ref") or "").strip()
+        if not url or not ref:
+            raise RuntimeError("snapd-repo-url and snapd-ref must be set, or query-features-path")
+
+        repo = str(self.SNAPD_DIR)
+        if not (self.SNAPD_DIR / ".git").exists():
+            self._run(["git", "init", "-q", repo], check=True)
+            self._run(["git", "-C", repo, "remote", "add", "origin", url], check=True)
+            self._run(["git", "-C", repo, "sparse-checkout", "set", self.FEATURES_SUBDIR], check=True)
+        else:
+            self._run(["git", "-C", repo, "remote", "set-url", "origin", url], check=True)
+        self._run(["git", "-C", repo, "fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", ref], check=True)
+        self._run(["git", "-C", repo, "checkout", "-q", "--force", "FETCH_HEAD"], check=True)
+
+        query_features = self._query_features_path()
+        if not query_features.exists():
+            raise FileNotFoundError(f"query_features.py not found in {url} at {ref}: {query_features}")
 
     def _service_state_marker_value(self, config: dict[str, object]) -> str:
         relevant_state = {
@@ -255,14 +338,13 @@ class TestExecutionListerCharm(CharmBase):
             "listen-port": int(self.config.get("listen-port") or 8181),
             "mongodb-secret-id": str(self.config.get("mongodb-secret-id") or "").strip(),
             "query-features-path": str(self._query_features_path()),
-            "query-features-requirements-path": str(self.query_features_requirements_path),
             "execution-data-dir": str(self.execution_data_dir),
             "spread-execution-map-path": str(self.spread_tests_execution_path),
             "added-spread-tests-path": str(self.added_spread_tests_path),
             "base-executions-path": str(self.base_tests_path),
             "base-tests-max-minutes": int(self.config.get("base-tests-max-minutes", 0)),
             "refresh-helper-command": str(self.config.get("refresh-helper-command") or "").strip(),
-            "refresh-timeout-seconds": int(self.config.get("refresh-timeout-seconds", 300)),
+            "refresh-timeout-seconds": self.refresh_timeout_seconds,
             "refresh-command": config["refresh_command"],
         }
         return json.dumps(relevant_state, sort_keys=True)
@@ -271,14 +353,14 @@ class TestExecutionListerCharm(CharmBase):
         configured = str(self.config.get("query-features-path") or "").strip()
         if configured:
             return Path(configured)
-        return Path("/home/ubuntu/source/snapd/tests/utils/features/query_features.py")
+        return self.SNAPD_DIR / self.FEATURES_SUBDIR / "query_features.py"
 
     def _refresh_command(self) -> list[str]:
         configured = str(self.config.get("refresh-helper-command") or "").strip()
         if configured:
             return shlex.split(configured)
         return [
-            "python3",
+            str(self.venv_python),
             str(self.refresh_helper_script),
             "--query-features-path",
             str(self._query_features_path()),
@@ -397,7 +479,7 @@ WantedBy=multi-user.target
                     items.append(item)
         return items
 
-    def _call_service(self, endpoint: str, payload: dict) -> dict:
+    def _call_service(self, endpoint: str, payload: dict, timeout: int = 30) -> dict:
         host = str(self.config.get("listen-host") or "127.0.0.1")
         port = int(self.config.get("listen-port") or 8181)
         url = f"http://{host}:{port}{endpoint}"
@@ -408,7 +490,7 @@ WantedBy=multi-user.target
             method="POST",
         )
         try:
-            with urllib_request.urlopen(req, timeout=30) as response:
+            with urllib_request.urlopen(req, timeout=timeout) as response:
                 body = response.read().decode("utf-8")
         except urllib_error.HTTPError as exc:
             details = exc.read().decode("utf-8")
@@ -417,9 +499,9 @@ WantedBy=multi-user.target
             raise RuntimeError(f"service request failed: {exc}") from exc
         return json.loads(body)
 
-    def _run(self, cmd: list[str], check: bool = False) -> subprocess.CompletedProcess:
+    def _run(self, cmd: list[str], check: bool = False, env: dict | None = None) -> subprocess.CompletedProcess:
         logger.info("Running command: %s", shlex.join(cmd))
-        return subprocess.run(cmd, check=check, capture_output=True, text=True)
+        return subprocess.run(cmd, check=check, capture_output=True, text=True, env=env)
 
 
 if __name__ == "__main__":

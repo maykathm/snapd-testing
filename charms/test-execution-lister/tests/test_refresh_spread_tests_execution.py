@@ -25,7 +25,7 @@ class FeatureQueryTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         mock_run.assert_called_once_with(
             [
-                "python3",
+                sys.executable,
                 "/tmp/query_features.py",
                 "feat",
                 "sys",

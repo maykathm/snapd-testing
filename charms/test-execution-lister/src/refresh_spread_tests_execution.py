@@ -7,6 +7,7 @@ import argparse
 import json
 import subprocess
 import os
+import sys
 from pathlib import Path
 
 
@@ -17,8 +18,9 @@ class FeatureQuery:
         self.creds_path = creds_path
 
     def query_features(self, command: str, args: str = ""):
+        # same interpreter as this helper, i.e. the charm's venv with pymongo
         cmd = [
-            "python3",
+            sys.executable,
             str(self.query_features_path),
             *command.split(),
             "-f",
